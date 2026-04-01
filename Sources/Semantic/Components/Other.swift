@@ -1,3 +1,13 @@
+/// Pre-computed atomic components for common literals to avoid repeated allocations.
+@usableFromInline
+enum CommonAtomicComponents {
+    @usableFromInline
+    static let breakLine = AtomicComponent(string: "\n", type: .standard)
+
+    @usableFromInline
+    static let space = AtomicComponent(string: " ", type: .standard)
+}
+
 /// An indentation component.
 ///
 /// Example:

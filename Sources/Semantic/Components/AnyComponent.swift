@@ -71,7 +71,9 @@ public struct TupleComponent2<C0: SemanticStringComponent, C1: SemanticStringCom
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        c0.buildComponents() + c1.buildComponents()
+        var result = c0.buildComponents()
+        result.append(contentsOf: c1.buildComponents())
+        return result
     }
 }
 
@@ -90,6 +92,9 @@ public struct TupleComponent3<C0: SemanticStringComponent, C1: SemanticStringCom
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        c0.buildComponents() + c1.buildComponents() + c2.buildComponents()
+        var result = c0.buildComponents()
+        result.append(contentsOf: c1.buildComponents())
+        result.append(contentsOf: c2.buildComponents())
+        return result
     }
 }

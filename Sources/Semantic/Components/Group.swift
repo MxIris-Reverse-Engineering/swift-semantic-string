@@ -49,23 +49,27 @@ public struct Group: SemanticStringComponent {
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        let expanded = items.map { $0.buildComponents() }.filter { !$0.isEmpty }
-
-        guard !expanded.isEmpty else { return [] }
-
         if let sep = separator {
             let sepComponents = sep.buildComponents()
             var result: [AtomicComponent] = []
-            for (index, components) in expanded.enumerated() {
-                result.append(contentsOf: components)
-                if index < expanded.count - 1 {
+            var needsSeparator = false
+            for item in items {
+                let components = item.buildComponents()
+                guard !components.isEmpty else { continue }
+                if needsSeparator {
                     result.append(contentsOf: sepComponents)
                 }
+                result.append(contentsOf: components)
+                needsSeparator = true
             }
             return result
         }
 
-        return expanded.flatMap { $0 }
+        var result: [AtomicComponent] = []
+        for item in items {
+            result.append(contentsOf: item.buildComponents())
+        }
+        return result
     }
 
     /// Applies a separator between components.

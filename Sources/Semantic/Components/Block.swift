@@ -71,13 +71,16 @@ public struct DeclarationBlock: SemanticStringComponent {
 
         // Header with indent
         if level > 0 {
-            result.append(contentsOf: Indent(level: level - 1).buildComponents())
+            let indentString = String(repeating: " ", count: (level - 1) * 4)
+            if !indentString.isEmpty {
+                result.append(AtomicComponent(string: indentString, type: .standard))
+            }
         }
         result.append(contentsOf: header.buildComponents())
 
         // Opening brace
-        result.append(contentsOf: Space().buildComponents())
-        result.append(contentsOf: Standard("{").buildComponents())
+        result.append(CommonAtomicComponents.space)
+        result.append(AtomicComponent(string: "{", type: .standard))
 
         // Body - components handle their own structure (NestedDeclaration adds BreakLine, MemberList handles its own)
         let bodyComponents = body.flatMap { $0.buildComponents() }
@@ -87,13 +90,16 @@ public struct DeclarationBlock: SemanticStringComponent {
         if !bodyComponents.isEmpty {
             // Add BreakLine before closing brace if body doesn't end with newline
             if let last = bodyComponents.last, !last.string.hasSuffix("\n") {
-                result.append(contentsOf: BreakLine().buildComponents())
+                result.append(CommonAtomicComponents.breakLine)
             }
             if level > 0 {
-                result.append(contentsOf: Indent(level: level - 1).buildComponents())
+                let indentString = String(repeating: " ", count: (level - 1) * 4)
+                if !indentString.isEmpty {
+                    result.append(AtomicComponent(string: indentString, type: .standard))
+                }
             }
         }
-        result.append(contentsOf: Standard("}").buildComponents())
+        result.append(AtomicComponent(string: "}", type: .standard))
 
         return result
     }
@@ -127,7 +133,11 @@ public struct NestedDeclaration: SemanticStringComponent {
     public func buildComponents() -> [AtomicComponent] {
         let built = content.buildComponents()
         guard !built.isEmpty else { return [] }
-        return BreakLine().buildComponents() + built
+        var result: [AtomicComponent] = []
+        result.reserveCapacity(built.count + 1)
+        result.append(CommonAtomicComponents.breakLine)
+        result.append(contentsOf: built)
+        return result
     }
 }
 
@@ -191,18 +201,21 @@ public struct BlockList: SemanticStringComponent {
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        let groups = items.map { $0.buildComponents() }.filter { !$0.isEmpty }
-        guard !groups.isEmpty else { return [] }
-
         var result: [AtomicComponent] = []
-        for (index, group) in groups.enumerated() {
-            result.append(contentsOf: BreakLine().buildComponents())
-            if _separatedByEmptyLine && index > 0 {
-                result.append(contentsOf: BreakLine().buildComponents())
+        var hasContent = false
+        for item in items {
+            let group = item.buildComponents()
+            guard !group.isEmpty else { continue }
+            if _separatedByEmptyLine && hasContent {
+                result.append(CommonAtomicComponents.breakLine)
             }
+            result.append(CommonAtomicComponents.breakLine)
             result.append(contentsOf: group)
+            hasContent = true
         }
-        result.append(contentsOf: BreakLine().buildComponents())
+        if hasContent {
+            result.append(CommonAtomicComponents.breakLine)
+        }
         return result
     }
 }
@@ -255,16 +268,24 @@ public struct MemberList: SemanticStringComponent {
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        let groups = items.map { $0.buildComponents() }.filter { !$0.isEmpty }
-        guard !groups.isEmpty else { return [] }
+        let indentString = level > 0 ? String(repeating: " ", count: level * 4) : ""
+        let indentComponent: AtomicComponent? = indentString.isEmpty ? nil : AtomicComponent(string: indentString, type: .standard)
 
         var result: [AtomicComponent] = []
-        for group in groups {
-            result.append(contentsOf: BreakLine().buildComponents())
-            result.append(contentsOf: Indent(level: level).buildComponents())
+        var hasContent = false
+        for item in items {
+            let group = item.buildComponents()
+            guard !group.isEmpty else { continue }
+            result.append(CommonAtomicComponents.breakLine)
+            if let indentComponent {
+                result.append(indentComponent)
+            }
             result.append(contentsOf: group)
+            hasContent = true
         }
-        result.append(contentsOf: BreakLine().buildComponents())
+        if hasContent {
+            result.append(CommonAtomicComponents.breakLine)
+        }
         return result
     }
 }

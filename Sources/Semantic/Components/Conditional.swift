@@ -108,15 +108,17 @@ public struct ForEach<C: Collection>: SemanticStringComponent {
     /// Creates a ForEach with a component separator.
     @inlinable
     public init(_ collection: C, separator: some SemanticStringComponent, @SemanticStringBuilder content: (C.Element) -> SemanticString) {
-        let items = collection.map { content($0) }.filter { !$0.isEmpty }
         let sepComponents = separator.buildComponents()
-
         var result: [AtomicComponent] = []
-        for (index, item) in items.enumerated() {
-            result.append(contentsOf: item.components)
-            if index < items.count - 1 {
+        var needsSeparator = false
+        for element in collection {
+            let item = content(element)
+            guard !item.isEmpty else { continue }
+            if needsSeparator {
                 result.append(contentsOf: sepComponents)
             }
+            result.append(contentsOf: item.components)
+            needsSeparator = true
         }
         self.content = result
     }

@@ -22,19 +22,50 @@ public enum SemanticStringBuilder {
 
     public static func buildPartialBlock(first: some CustomStringConvertible) -> [Element] { [Standard(first.description)] }
 
-    public static func buildPartialBlock(accumulated: [Element], next: Element) -> [Element] { accumulated + [next] }
+    public static func buildPartialBlock(accumulated: [Element], next: Element) -> [Element] {
+        var result = accumulated
+        result.append(next)
+        return result
+    }
 
-    public static func buildPartialBlock(accumulated: [Element], next: [Element]) -> [Element] { accumulated + next }
+    public static func buildPartialBlock(accumulated: [Element], next: [Element]) -> [Element] {
+        var result = accumulated
+        result.append(contentsOf: next)
+        return result
+    }
 
-    public static func buildPartialBlock(accumulated: [Element], next: Element?) -> [Element] { next.map { accumulated + [$0] } ?? accumulated }
+    public static func buildPartialBlock(accumulated: [Element], next: Element?) -> [Element] {
+        guard let next else { return accumulated }
+        var result = accumulated
+        result.append(next)
+        return result
+    }
 
-    public static func buildPartialBlock(accumulated: [Element], next: [Element]?) -> [Element] { accumulated + (next ?? []) }
+    public static func buildPartialBlock(accumulated: [Element], next: [Element]?) -> [Element] {
+        guard let next else { return accumulated }
+        var result = accumulated
+        result.append(contentsOf: next)
+        return result
+    }
 
-    public static func buildPartialBlock(accumulated: [Element], next: SemanticString) -> [Element] { accumulated + [next] }
+    public static func buildPartialBlock(accumulated: [Element], next: SemanticString) -> [Element] {
+        var result = accumulated
+        result.append(next)
+        return result
+    }
 
-    public static func buildPartialBlock(accumulated: [Element], next: SemanticString?) -> [Element] { accumulated + (next.map { [$0] } ?? []) }
+    public static func buildPartialBlock(accumulated: [Element], next: SemanticString?) -> [Element] {
+        guard let next else { return accumulated }
+        var result = accumulated
+        result.append(next)
+        return result
+    }
 
-    public static func buildPartialBlock(accumulated: [Element], next: some CustomStringConvertible) -> [Element] { accumulated + [Standard(next.description)] }
+    public static func buildPartialBlock(accumulated: [Element], next: some CustomStringConvertible) -> [Element] {
+        var result = accumulated
+        result.append(Standard(next.description))
+        return result
+    }
 
     public static func buildPartialBlock(accumulated: [Element], next: Void) -> [Element] { accumulated }
 

@@ -153,27 +153,27 @@ public struct Joined: SemanticStringComponent {
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        let expanded = items.map { $0.buildComponents() }.filter { !$0.isEmpty }
-
-        guard !expanded.isEmpty else { return [] }
-
         let sepComponents = separator.buildComponents()
         var result: [AtomicComponent] = []
+        var hasContent = false
 
-        // Add prefix if present
-        if let prefix {
-            result.append(contentsOf: prefix.buildComponents())
-        }
-
-        // Add joined items
-        for (index, components) in expanded.enumerated() {
-            result.append(contentsOf: components)
-            if index < expanded.count - 1 {
+        for item in items {
+            let components = item.buildComponents()
+            guard !components.isEmpty else { continue }
+            if hasContent {
                 result.append(contentsOf: sepComponents)
             }
+            result.append(contentsOf: components)
+            hasContent = true
         }
 
-        // Add suffix if present
+        guard hasContent else { return [] }
+
+        // Add prefix and suffix only if there was content
+        if let prefix {
+            let prefixComponents = prefix.buildComponents()
+            result.insert(contentsOf: prefixComponents, at: 0)
+        }
         if let suffix {
             result.append(contentsOf: suffix.buildComponents())
         }

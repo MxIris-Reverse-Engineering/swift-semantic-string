@@ -85,7 +85,11 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         if let cached = _storage.cachedString {
             return cached
         }
-        let computed = components.map(\.string).joined()
+        let atomicComponents = components
+        var computed = ""
+        for atomicComponent in atomicComponents {
+            computed += atomicComponent.string
+        }
         _storage.cachedString = computed
         return computed
     }
@@ -256,57 +260,83 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     /// Returns a new semantic string with leading whitespace-only components removed.
     @inlinable
     public func trimmingLeadingWhitespace() -> SemanticString {
-        var items = components
-        while let first = items.first,
-              first.string.allSatisfy(\.isWhitespace) {
-            items.removeFirst()
+        let items = components
+        var startIndex = items.startIndex
+        while startIndex < items.endIndex,
+              items[startIndex].string.allSatisfy(\.isWhitespace) {
+            startIndex += 1
         }
-        return SemanticString(components: items)
+        return SemanticString(components: Array(items[startIndex...]))
     }
 
     /// Returns a new semantic string with trailing whitespace-only components removed.
     @inlinable
     public func trimmingTrailingWhitespace() -> SemanticString {
-        var items = components
-        while let last = items.last,
-              last.string.allSatisfy(\.isWhitespace) {
-            items.removeLast()
+        let items = components
+        var endIndex = items.endIndex
+        while endIndex > items.startIndex,
+              items[endIndex - 1].string.allSatisfy(\.isWhitespace) {
+            endIndex -= 1
         }
-        return SemanticString(components: items)
+        return SemanticString(components: Array(items[..<endIndex]))
     }
 
     /// Returns a new semantic string with both leading and trailing whitespace-only components removed.
     @inlinable
     public func trimmingWhitespace() -> SemanticString {
-        trimmingLeadingWhitespace().trimmingTrailingWhitespace()
+        let items = components
+        var startIndex = items.startIndex
+        while startIndex < items.endIndex,
+              items[startIndex].string.allSatisfy(\.isWhitespace) {
+            startIndex += 1
+        }
+        var endIndex = items.endIndex
+        while endIndex > startIndex,
+              items[endIndex - 1].string.allSatisfy(\.isWhitespace) {
+            endIndex -= 1
+        }
+        return SemanticString(components: Array(items[startIndex..<endIndex]))
     }
 
     /// Returns a new semantic string with leading newline-only components removed.
     @inlinable
     public func trimmingLeadingNewlines() -> SemanticString {
-        var items = components
-        while let first = items.first,
-              first.string.allSatisfy(\.isNewline) {
-            items.removeFirst()
+        let items = components
+        var startIndex = items.startIndex
+        while startIndex < items.endIndex,
+              items[startIndex].string.allSatisfy(\.isNewline) {
+            startIndex += 1
         }
-        return SemanticString(components: items)
+        return SemanticString(components: Array(items[startIndex...]))
     }
 
     /// Returns a new semantic string with trailing newline-only components removed.
     @inlinable
     public func trimmingTrailingNewlines() -> SemanticString {
-        var items = components
-        while let last = items.last,
-              last.string.allSatisfy(\.isNewline) {
-            items.removeLast()
+        let items = components
+        var endIndex = items.endIndex
+        while endIndex > items.startIndex,
+              items[endIndex - 1].string.allSatisfy(\.isNewline) {
+            endIndex -= 1
         }
-        return SemanticString(components: items)
+        return SemanticString(components: Array(items[..<endIndex]))
     }
 
     /// Returns a new semantic string with both leading and trailing newline-only components removed.
     @inlinable
     public func trimmingNewlines() -> SemanticString {
-        trimmingLeadingNewlines().trimmingTrailingNewlines()
+        let items = components
+        var startIndex = items.startIndex
+        while startIndex < items.endIndex,
+              items[startIndex].string.allSatisfy(\.isNewline) {
+            startIndex += 1
+        }
+        var endIndex = items.endIndex
+        while endIndex > startIndex,
+              items[endIndex - 1].string.allSatisfy(\.isNewline) {
+            endIndex -= 1
+        }
+        return SemanticString(components: Array(items[startIndex..<endIndex]))
     }
 
     // MARK: - Subscript Access
@@ -387,13 +417,16 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     @inlinable
     public func contains(_ substring: String) -> Bool {
         guard !substring.isEmpty else { return true }
-        var searchIndex = string.startIndex
-        while searchIndex < string.endIndex {
-            let remaining = string[searchIndex...]
-            if remaining.hasPrefix(substring) {
+        let source = string.utf8
+        let pattern = substring.utf8
+        guard source.count >= pattern.count else { return false }
+        var sourceIndex = source.startIndex
+        let searchEnd = source.index(source.endIndex, offsetBy: -pattern.count)
+        while sourceIndex <= searchEnd {
+            if source[sourceIndex...].starts(with: pattern) {
                 return true
             }
-            searchIndex = string.index(after: searchIndex)
+            source.formIndex(after: &sourceIndex)
         }
         return false
     }
@@ -457,33 +490,26 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     /// Returns a new semantic string with the other string appended.
     @inlinable
     public func appending(_ other: SemanticString) -> SemanticString {
-        var result = self
-        result.makeUnique()
-        result.invalidateCache()
-        result._storage.elements.append(contentsOf: other._storage.elements)
-        return result
+        var newElements = _storage.elements
+        newElements.append(contentsOf: other._storage.elements)
+        return SemanticString(components: newElements)
     }
 
     /// Returns a new semantic string with the component appended.
     @inlinable
     public func appending(_ component: some SemanticStringComponent) -> SemanticString {
-        var result = self
-        result.makeUnique()
-        result.invalidateCache()
-        result._storage.elements.append(component)
-        return result
+        var newElements = _storage.elements
+        newElements.append(component)
+        return SemanticString(components: newElements)
     }
 
     /// Returns a new semantic string with the string appended.
     @inlinable
     public func appending(_ string: String, type: SemanticType = .standard) -> SemanticString {
-        var result = self
-        if !string.isEmpty {
-            result.makeUnique()
-            result.invalidateCache()
-            result._storage.elements.append(AtomicComponent(string: string, type: type))
-        }
-        return result
+        guard !string.isEmpty else { return self }
+        var newElements = _storage.elements
+        newElements.append(AtomicComponent(string: string, type: type))
+        return SemanticString(components: newElements)
     }
 
     // MARK: - Wrapping
