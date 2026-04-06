@@ -109,7 +109,31 @@ public struct DeclarationBlock: SemanticStringComponent {
 
 /// A nested type or protocol declaration within a parent.
 ///
-/// Handles the BreakLine before the nested declaration.
+/// Adds a BreakLine before the nested content to separate it from the previous sibling.
+///
+/// Example output (when placed inside a DeclarationBlock body):
+/// ```
+/// class Outer {
+///     var x: Int
+///
+///     struct Inner {      ← NestedDeclaration adds the \n before this block
+///         var y: Int
+///     }
+/// }
+/// ```
+///
+/// Usage:
+/// ```swift
+/// NestedDeclaration {
+///     DeclarationBlock(level: 2) {
+///         Keyword("struct")
+///         Space()
+///         TypeName(kind: .struct, "Inner")
+///     } body: {
+///         // ...
+///     }
+/// }
+/// ```
 public struct NestedDeclaration: SemanticStringComponent {
     @usableFromInline
     let content: any SemanticStringComponent
@@ -144,6 +168,43 @@ public struct NestedDeclaration: SemanticStringComponent {
 // MARK: - Block List
 
 /// A list of items with breaks before each and after the last (if non-empty).
+/// No indentation is added — each item controls its own indent.
+///
+/// Example output (default):
+/// ```
+///                     ← breakLine before item 1
+/// protocol Foo {      ← item 1
+///     func bar()
+/// }
+///                     ← breakLine before item 2
+/// protocol Baz {      ← item 2
+///     func qux()
+/// }
+///                     ← trailing breakLine
+/// ```
+///
+/// Example output (with `.separatedByEmptyLine()`):
+/// ```
+///                     ← breakLine before item 1
+/// protocol Foo {
+///     func bar()
+/// }
+///                     ← extra breakLine (empty line separator)
+///                     ← breakLine before item 2
+/// protocol Baz {
+///     func qux()
+/// }
+///                     ← trailing breakLine
+/// ```
+///
+/// Usage:
+/// ```swift
+/// BlockList {
+///     protocolBlock1
+///     protocolBlock2
+/// }
+/// .separatedByEmptyLine()  // optional
+/// ```
 public struct BlockList: SemanticStringComponent {
     @usableFromInline
     let items: [any SemanticStringComponent]
@@ -222,7 +283,39 @@ public struct BlockList: SemanticStringComponent {
 
 // MARK: - Member List
 
-/// A list of indented member lines.
+/// A list of indented member lines. Each item gets a breakLine + indent(level * 4 spaces) before it,
+/// and a trailing breakLine after the last item.
+///
+/// Example output (level: 1, 3 items):
+/// ```
+///                         ← breakLine
+///     // offset: 0x10     ← indent(4) + item 1
+///                         ← breakLine
+///     var name: String    ← indent(4) + item 2
+///                         ← breakLine
+///     func foo()          ← indent(4) + item 3
+///                         ← trailing breakLine
+/// ```
+///
+/// Example output (level: 2, 2 items):
+/// ```
+///                             ← breakLine
+///         var x: Int          ← indent(8) + item 1
+///                             ← breakLine
+///         var y: Int          ← indent(8) + item 2
+///                             ← trailing breakLine
+/// ```
+///
+/// Items that produce empty components are skipped entirely (no breakLine or indent).
+///
+/// Usage:
+/// ```swift
+/// MemberList(level: 1) {
+///     OffsetComment(prefix: "field offset", offset: 0x10, emit: true)
+///     variableDeclaration
+///     functionDeclaration
+/// }
+/// ```
 public struct MemberList: SemanticStringComponent {
     @usableFromInline
     let level: Int
