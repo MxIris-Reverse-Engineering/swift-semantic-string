@@ -12,6 +12,15 @@ enum CommonAtomicComponents {
     static let indentStrings: [String] = (0...16).map {
         String(repeating: " ", count: $0 * 4)
     }
+
+    /// Returns a 4-space indent string for the given positive level.
+    /// Returns `""` for `level <= 0`. Uses a cache for `level <= 16`.
+    @inlinable
+    static func indentString(forLevel level: Int) -> String {
+        if level <= 0 { return "" }
+        if level <= 16 { return indentStrings[level] }
+        return String(repeating: " ", count: level * 4)
+    }
 }
 
 /// An indentation component.
@@ -36,13 +45,7 @@ public struct Indent: AtomicSemanticComponent, CustomStringConvertible {
 
     @inlinable
     public var description: String {
-        if level <= 0 {
-            return ""
-        }
-        if level <= 16 {
-            return CommonAtomicComponents.indentStrings[level]
-        }
-        return String(repeating: " ", count: level * 4)
+        CommonAtomicComponents.indentString(forLevel: level)
     }
 }
 

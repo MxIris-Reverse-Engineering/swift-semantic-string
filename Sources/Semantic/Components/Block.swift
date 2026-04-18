@@ -72,15 +72,7 @@ public struct DeclarationBlock: SemanticStringComponent {
         // Compute header/closing indent once per call. DeclarationBlock indents
         // by (level - 1), so level 0/1 produce an empty indent string that is
         // filtered by the `isEmpty` guards at each call site.
-        let indentDepth = level - 1
-        let indentString: String
-        if indentDepth <= 0 {
-            indentString = ""
-        } else if indentDepth <= 16 {
-            indentString = CommonAtomicComponents.indentStrings[indentDepth]
-        } else {
-            indentString = String(repeating: " ", count: indentDepth * 4)
-        }
+        let indentString = CommonAtomicComponents.indentString(forLevel: level - 1)
 
         // Header with indent
         if level > 0 && !indentString.isEmpty {
