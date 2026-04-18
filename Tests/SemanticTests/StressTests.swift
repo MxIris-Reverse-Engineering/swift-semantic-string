@@ -7,8 +7,10 @@ import Foundation
 // These tests exercise large/deeply-nested inputs to surface regressions and
 // record coarse wall-clock numbers. Each test sanity-checks output AND asserts
 // a loose upper-bound elapsed time using `ContinuousClock`. Thresholds are
-// GENEROUS baselines (≈10× locally observed values) — Task 8 will tighten them
-// after the optimizations in the performance design spec land.
+// GENEROUS baselines (100×–2500× locally observed timings) — they are meant
+// only to catch catastrophic regressions on slow CI. Task 8 will tighten these
+// after the optimizations in the performance design spec land, at which point
+// the current numbers should NOT be treated as rigorous performance targets.
 
 // MARK: - Scale
 
@@ -150,9 +152,14 @@ struct DepthStressTests {
             _ = semanticString.components
         }
 
-        // Sanity: output is non-empty and closes with a brace.
+        // Sanity: output is non-empty, closes with a brace, and actually has
+        // `depth` nesting levels. Each DeclarationBlock emits exactly one `{`
+        // and one `}`, so counting closing braces catches silent depth-reduction
+        // bugs that `hasSuffix("}")` alone would miss.
         #expect(!semanticString.string.isEmpty)
         #expect(semanticString.string.hasSuffix("}"))
+        #expect(semanticString.string.filter { $0 == "}" }.count == depth)
+        #expect(semanticString.string.filter { $0 == "{" }.count == depth)
 
         #expect(buildElapsed < .seconds(10))
     }
@@ -217,8 +224,15 @@ struct DepthStressTests {
             _ = semanticString.components
         }
 
+        // Sanity: output is non-empty, closes with a brace, has `depth`
+        // DeclarationBlocks, and contains the expected number of `var` members.
+        // 49 inner levels × 9 `member{level}_{i}` vars + 10 leaf `leafVar{i}`
+        // vars = 441 + 10 = 451.
         #expect(!semanticString.string.isEmpty)
         #expect(semanticString.string.hasSuffix("}"))
+        #expect(semanticString.string.filter { $0 == "}" }.count == depth)
+        #expect(semanticString.string.filter { $0 == "{" }.count == depth)
+        #expect(semanticString.string.ranges(of: "var").count == 451)
 
         #expect(buildElapsed < .seconds(15))
     }
