@@ -90,7 +90,12 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
             return cached
         }
         let atomicComponents = components
+        var total = 0
+        for atomicComponent in atomicComponents {
+            total += atomicComponent.string.utf8.count
+        }
         var computed = ""
+        computed.reserveCapacity(total)
         for atomicComponent in atomicComponents {
             computed += atomicComponent.string
         }
