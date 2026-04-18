@@ -88,7 +88,11 @@ public struct DeclarationBlock: SemanticStringComponent {
         result.append(AtomicComponent(string: "{", type: .standard))
 
         // Body - components handle their own structure (NestedDeclaration adds BreakLine, MemberList handles its own)
-        let bodyComponents = body.flatMap { $0.buildComponents() }
+        var bodyComponents: [AtomicComponent] = []
+        bodyComponents.reserveCapacity(body.count)
+        for element in body {
+            bodyComponents.append(contentsOf: element.buildComponents())
+        }
         result.append(contentsOf: bodyComponents)
 
         // Closing brace with indent (only if body had content)
