@@ -71,7 +71,11 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         if let cached = _storage.cachedComponents {
             return cached
         }
-        let computed = _storage.elements.flatMap { $0.buildComponents() }
+        var computed: [AtomicComponent] = []
+        computed.reserveCapacity(_storage.elements.count)
+        for element in _storage.elements {
+            computed.append(contentsOf: element.buildComponents())
+        }
         _storage.cachedComponents = computed
         return computed
     }
