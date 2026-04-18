@@ -68,6 +68,9 @@ public struct DeclarationBlock: SemanticStringComponent {
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
         var result: [AtomicComponent] = []
+        // Conservative lower bound: header + space + "{" + body + break + indent + "}" ≈ body.count + 8.
+        // Array grows geometrically, so under-reserving is harmless.
+        result.reserveCapacity(body.count + 8)
 
         // Compute header/closing indent once per call. DeclarationBlock indents
         // by (level - 1), so level 0/1 produce an empty indent string that is
@@ -262,6 +265,8 @@ public struct BlockList: SemanticStringComponent {
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
         var result: [AtomicComponent] = []
+        // Rough pattern per item: leading break + item (+ optional separator break) + trailing break.
+        result.reserveCapacity(items.count * 2 + 1)
         var hasContent = false
         for item in items {
             let group = item.buildComponents()
@@ -360,10 +365,12 @@ public struct MemberList: SemanticStringComponent {
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        let indentString = level > 0 ? String(repeating: " ", count: level * 4) : ""
+        let indentString = CommonAtomicComponents.indentString(forLevel: level)
         let indentComponent: AtomicComponent? = indentString.isEmpty ? nil : AtomicComponent(string: indentString, type: .standard)
 
         var result: [AtomicComponent] = []
+        // Rough pattern per item: break + indent + item, plus one trailing break.
+        result.reserveCapacity(items.count * 3 + 1)
         var hasContent = false
         for item in items {
             let group = item.buildComponents()

@@ -52,6 +52,7 @@ public struct Group: SemanticStringComponent {
         if let sep = separator {
             let sepComponents = sep.buildComponents()
             var result: [AtomicComponent] = []
+            result.reserveCapacity(items.count)
             var needsSeparator = false
             for item in items {
                 let components = item.buildComponents()
@@ -66,6 +67,7 @@ public struct Group: SemanticStringComponent {
         }
 
         var result: [AtomicComponent] = []
+        result.reserveCapacity(items.count)
         for item in items {
             result.append(contentsOf: item.buildComponents())
         }
