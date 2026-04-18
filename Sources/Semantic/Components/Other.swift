@@ -6,6 +6,12 @@ enum CommonAtomicComponents {
 
     @usableFromInline
     static let space = AtomicComponent(string: " ", type: .standard)
+
+    /// Cached indent strings for levels 0…16 (common depth for code generation).
+    @usableFromInline
+    static let indentStrings: [String] = (0...16).map {
+        String(repeating: " ", count: $0 * 4)
+    }
 }
 
 /// An indentation component.
@@ -30,7 +36,13 @@ public struct Indent: AtomicSemanticComponent, CustomStringConvertible {
 
     @inlinable
     public var description: String {
-        level > 0 ? String(repeating: " ", count: level * 4) : ""
+        if level <= 0 {
+            return ""
+        }
+        if level <= 16 {
+            return CommonAtomicComponents.indentStrings[level]
+        }
+        return String(repeating: " ", count: level * 4)
     }
 }
 

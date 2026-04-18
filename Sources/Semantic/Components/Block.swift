@@ -69,12 +69,22 @@ public struct DeclarationBlock: SemanticStringComponent {
     public func buildComponents() -> [AtomicComponent] {
         var result: [AtomicComponent] = []
 
+        // Compute header/closing indent once per call. DeclarationBlock indents
+        // by (level - 1), so level 0/1 produce an empty indent string that is
+        // filtered by the `isEmpty` guards at each call site.
+        let indentDepth = level - 1
+        let indentString: String
+        if indentDepth <= 0 {
+            indentString = ""
+        } else if indentDepth <= 16 {
+            indentString = CommonAtomicComponents.indentStrings[indentDepth]
+        } else {
+            indentString = String(repeating: " ", count: indentDepth * 4)
+        }
+
         // Header with indent
-        if level > 0 {
-            let indentString = String(repeating: " ", count: (level - 1) * 4)
-            if !indentString.isEmpty {
-                result.append(AtomicComponent(string: indentString, type: .standard))
-            }
+        if level > 0 && !indentString.isEmpty {
+            result.append(AtomicComponent(string: indentString, type: .standard))
         }
         result.append(contentsOf: header.buildComponents())
 
@@ -92,11 +102,8 @@ public struct DeclarationBlock: SemanticStringComponent {
             if let last = bodyComponents.last, !last.string.hasSuffix("\n") {
                 result.append(CommonAtomicComponents.breakLine)
             }
-            if level > 0 {
-                let indentString = String(repeating: " ", count: (level - 1) * 4)
-                if !indentString.isEmpty {
-                    result.append(AtomicComponent(string: indentString, type: .standard))
-                }
+            if level > 0 && !indentString.isEmpty {
+                result.append(AtomicComponent(string: indentString, type: .standard))
             }
         }
         result.append(AtomicComponent(string: "}", type: .standard))
