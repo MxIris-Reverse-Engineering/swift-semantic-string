@@ -153,31 +153,39 @@ public struct Joined: SemanticStringComponent {
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        let sepComponents = separator.buildComponents()
-        var result: [AtomicComponent] = []
-        var hasContent = false
-
+        // First pass: materialize item component arrays, filter out empties, count totals.
+        var materialized: [[AtomicComponent]] = []
+        materialized.reserveCapacity(items.count)
+        var totalCount = 0
         for item in items {
-            let components = item.buildComponents()
-            guard !components.isEmpty else { continue }
-            if hasContent {
+            let built = item.buildComponents()
+            if !built.isEmpty {
+                materialized.append(built)
+                totalCount += built.count
+            }
+        }
+        guard !materialized.isEmpty else { return [] }
+
+        let sepComponents = separator.buildComponents()
+        let prefixComponents = prefix?.buildComponents() ?? []
+        let suffixComponents = suffix?.buildComponents() ?? []
+
+        // Second pass: assemble prefix ++ items-with-separators ++ suffix in a single allocation.
+        var result: [AtomicComponent] = []
+        result.reserveCapacity(
+            prefixComponents.count
+                + totalCount
+                + sepComponents.count * max(materialized.count - 1, 0)
+                + suffixComponents.count
+        )
+        result.append(contentsOf: prefixComponents)
+        for (index, group) in materialized.enumerated() {
+            if index > 0 {
                 result.append(contentsOf: sepComponents)
             }
-            result.append(contentsOf: components)
-            hasContent = true
+            result.append(contentsOf: group)
         }
-
-        guard hasContent else { return [] }
-
-        // Add prefix and suffix only if there was content
-        if let prefix {
-            let prefixComponents = prefix.buildComponents()
-            result.insert(contentsOf: prefixComponents, at: 0)
-        }
-        if let suffix {
-            result.append(contentsOf: suffix.buildComponents())
-        }
-
+        result.append(contentsOf: suffixComponents)
         return result
     }
 }
