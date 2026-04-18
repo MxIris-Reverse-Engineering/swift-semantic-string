@@ -508,6 +508,11 @@ struct CacheCoherenceTests {
 
         semanticString.append(" x", type: .standard)
 
+        // Explicitly assert internal cache was cleared so that a future bug
+        // removing invalidateCache() cannot be masked by coincidence.
+        #expect(semanticString._storage.cachedString == nil)
+        #expect(semanticString._storage.cachedComponents == nil)
+
         let postString = semanticString.string
         let postComponents = semanticString.components
         #expect(postString == "let x")
@@ -525,6 +530,10 @@ struct CacheCoherenceTests {
         let preComponents = semanticString.components
 
         semanticString.append(Variable("y"))
+
+        // Explicitly assert internal cache was cleared.
+        #expect(semanticString._storage.cachedString == nil)
+        #expect(semanticString._storage.cachedComponents == nil)
 
         let postString = semanticString.string
         let postComponents = semanticString.components
@@ -546,11 +555,64 @@ struct CacheCoherenceTests {
             Keyword("end")
         })
 
+        // Explicitly assert internal cache was cleared.
+        #expect(semanticString._storage.cachedString == nil)
+        #expect(semanticString._storage.cachedComponents == nil)
+
         let postString = semanticString.string
         let postComponents = semanticString.components
         #expect(postString == "start end")
         #expect(postString != preString)
         #expect(postComponents.count > preComponents.count)
+    }
+
+    @Test("Cache is invalidated after += with SemanticString")
+    func cacheInvalidatedAfterPlusEqualsSemanticString() {
+        var semanticString = SemanticString {
+            Keyword("lhs")
+        }
+        let preString = semanticString.string
+        let preComponents = semanticString.components
+        #expect(preString == "lhs")
+        #expect(preComponents.count == 1)
+
+        semanticString += SemanticString {
+            Space()
+            Keyword("rhs")
+        }
+
+        // Explicitly assert internal cache was cleared.
+        #expect(semanticString._storage.cachedString == nil)
+        #expect(semanticString._storage.cachedComponents == nil)
+
+        let postString = semanticString.string
+        let postComponents = semanticString.components
+        #expect(postString == "lhs rhs")
+        #expect(postString != preString)
+        #expect(postComponents.count > preComponents.count)
+    }
+
+    @Test("Cache is invalidated after write(_:)")
+    func cacheInvalidatedAfterWrite() {
+        var semanticString = SemanticString {
+            Keyword("initial")
+        }
+        let preString = semanticString.string
+        let preComponents = semanticString.components
+        #expect(preString == "initial")
+        #expect(preComponents.count == 1)
+
+        semanticString.write(" next")
+
+        // Explicitly assert internal cache was cleared.
+        #expect(semanticString._storage.cachedString == nil)
+        #expect(semanticString._storage.cachedComponents == nil)
+
+        let postString = semanticString.string
+        let postComponents = semanticString.components
+        #expect(postString == "initial next")
+        #expect(postString != preString)
+        #expect(postComponents.count == preComponents.count + 1)
     }
 }
 
@@ -732,6 +794,22 @@ struct HashableInvariantsTests {
         #expect(builderVariant == atomicVariant)
         #expect(builderVariant.hashValue == atomicVariant.hashValue)
         #expect(builderVariant.components == atomicVariant.components)
+
+        // Path C: two builder-built SemanticStrings composed via appending.
+        // This path is most likely to drift when the `SemanticString.components`
+        // getter is rewritten, so it's called out explicitly.
+        let firstHalf = SemanticString {
+            Keyword("let")
+            Space()
+        }
+        let secondHalf = SemanticString {
+            Variable("x")
+        }
+        let appendedVariant = firstHalf.appending(secondHalf)
+
+        #expect(builderVariant == appendedVariant)
+        #expect(builderVariant.hashValue == appendedVariant.hashValue)
+        #expect(appendedVariant.string == "let x")
     }
 }
 
@@ -850,5 +928,57 @@ struct EmptyBoundaryTests {
         let builtInJoined = inJoined.buildComponents()
         #expect(builtInJoined.map(\.string).joined() == "x y")
         #expect(builtInJoined.count == 3)
+    }
+
+    @Test("Multi-byte UTF-8 content round-trips through SemanticString.string")
+    func multiByteUTF8Content() {
+        // Covers any future optimization that pre-reserves capacity using
+        // `utf8.count`. If byte count and character count are ever confused,
+        // the grinning-face emoji (4 bytes), CJK (3 bytes each), and combining
+        // acute-accent variants of "café" will catch it.
+        let semanticString = SemanticString {
+            Keyword("\u{1F600}")                // 4-byte UTF-8 emoji (grinning face)
+            Space()
+            Variable("测试")                     // 3-byte UTF-8 CJK each
+            Space()
+            TypeName(kind: .other, "café")      // includes accented character
+        }
+
+        #expect(semanticString.string == "\u{1F600} 测试 café")
+        #expect(
+            semanticString.string.utf8.count ==
+                "\u{1F600}".utf8.count + 1 + "测试".utf8.count + 1 + "café".utf8.count
+        )
+
+        // Sanity: confirm byte count is strictly larger than character count.
+        #expect(semanticString.string.utf8.count > semanticString.string.count)
+    }
+
+    @Test("Nested Joined composes prefix/items-with-separator/suffix correctly")
+    func nestedJoined() {
+        // Inner: "[a, b]"
+        let inner = Joined(separator: ", ", prefix: "[", suffix: "]") {
+            Standard("a")
+            Standard("b")
+        }
+        // Outer: "(<inner> | [c])"
+        let outer = Joined(separator: " | ", prefix: "(", suffix: ")") {
+            inner
+            Joined(separator: ", ", prefix: "[", suffix: "]") {
+                Standard("c")
+            }
+        }
+
+        // Expected output discovered from current implementation and locked in
+        // here so that any change to Joined.buildComponents (e.g. the spec §3
+        // rewrite that eliminates front-insertion) cannot silently drift.
+        #expect(SemanticString(outer).string == "([a, b] | [c])")
+
+        // Also pin the atomic component sequence so flattening order is
+        // preserved across the upcoming rewrite.
+        let components = outer.buildComponents()
+        let expectedStrings = ["(", "[", "a", ", ", "b", "]", " | ", "[", "c", "]", ")"]
+        #expect(components.map(\.string) == expectedStrings)
+        #expect(components.count == 11)
     }
 }
