@@ -393,3 +393,110 @@ public struct MemberList: SemanticStringComponent {
     }
 }
 
+// MARK: - Rows
+
+/// A multi-row block that nests as a single item inside a row-oriented
+/// container (e.g. `MemberList`) yet expands into multiple visually distinct
+/// rows. Between consecutive sub-rows it emits `BreakLine + Indent(level)`;
+/// it emits **no** leading or trailing `BreakLine` — the outer container's
+/// leading separator opens the first sub-row, and the container's next
+/// iteration (or its own trailing break) closes the block.
+///
+/// Use `Rows` when one logical entry in a container maps to multiple lines
+/// at the same indent level — typically a declaration preceded by one or
+/// more annotation comments (offset / vtable / address). Wrapping those
+/// in a single `SemanticString` would fuse them into one row; `Rows`
+/// preserves the per-line `BreakLine + Indent` while still letting a
+/// helper return a single component.
+///
+/// Example output (level: 1, 3 sub-rows, inside a `MemberList(level: 1)`
+/// whose leading separator is `BreakLine + Indent(4)`):
+/// ```
+///     // address: 0x1000              ← MemberList break + indent + sub-row 1
+///     // address (setter): 0x1010     ← Rows internal break + indent + sub-row 2
+///     var name: Swift.String          ← Rows internal break + indent + sub-row 3
+/// ```
+///
+/// Sub-rows that produce empty components are skipped entirely — no
+/// `BreakLine + Indent` is emitted for them, preventing stray blank lines
+/// when conditional annotations (`emit: false`) collapse away.
+///
+/// Usage:
+/// ```swift
+/// MemberList(level: 1) {
+///     Rows(level: 1) {
+///         OffsetComment(prefix: "offset", offset: 0x10, emit: true)
+///         AddressComment(addressString: "0x1000", emit: true)
+///         variableDeclaration
+///     }
+/// }
+/// ```
+public struct Rows: SemanticStringComponent {
+    @usableFromInline
+    let level: Int
+
+    @usableFromInline
+    let items: [any SemanticStringComponent]
+
+    /// Creates from a sync result builder.
+    @inlinable
+    public init(level: Int, @SemanticStringBuilder content: () -> SemanticString) {
+        self.level = level
+        self.items = content().elements
+    }
+
+    /// Creates from pre-built content.
+    @inlinable
+    public init(level: Int, content: SemanticString) {
+        self.level = level
+        self.items = content.elements
+    }
+
+    /// Creates from an array of items.
+    @inlinable
+    public init(level: Int, _ items: [SemanticString]) {
+        self.level = level
+        self.items = items
+    }
+
+    /// Creates from an array of components.
+    @inlinable
+    public init<Component: SemanticStringComponent>(level: Int, _ items: [Component]) {
+        self.level = level
+        self.items = items
+    }
+
+    /// Creates from an async result builder.
+    @inlinable
+    public init(level: Int, @SemanticStringBuilder content: () async throws -> SemanticString) async rethrows {
+        self.level = level
+        let built = try await content()
+        self.items = built.elements
+    }
+
+    @inlinable
+    public func buildComponents() -> [AtomicComponent] {
+        let indentString = CommonAtomicComponents.indentString(forLevel: level)
+        let indentComponent: AtomicComponent? = indentString.isEmpty ? nil : AtomicComponent(string: indentString, type: .standard)
+
+        var result: [AtomicComponent] = []
+        // Rough pattern per non-first sub-row: break + indent + item; first sub-row
+        // is opened by the outer container's leading separator.
+        result.reserveCapacity(items.count * 3)
+        var hasContent = false
+        for item in items {
+            let group = item.buildComponents()
+            guard !group.isEmpty else { continue }
+            if hasContent {
+                result.append(CommonAtomicComponents.breakLine)
+                if let indentComponent {
+                    result.append(indentComponent)
+                }
+            }
+            result.append(contentsOf: group)
+            hasContent = true
+        }
+        return result
+    }
+}
+

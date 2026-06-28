@@ -155,6 +155,75 @@ struct GoldenMasterTests {
         #expect(components.last?.string == "\n")
     }
 
+    @Test("Rows inside MemberList expands into multi-line member entry at the same indent level")
+    func rowsInsideMemberListMultiLineEntry() {
+        let semanticString = SemanticString {
+            DeclarationBlock(level: 0) {
+                Keyword("struct")
+                Space()
+                TypeDeclaration(kind: .struct, "Foo")
+            } body: {
+                MemberList(level: 1) {
+                    Rows(level: 1) {
+                        Comment("offset: 0x10")
+                        Comment("address: 0x1000")
+                        SemanticString {
+                            Keyword("var")
+                            Space()
+                            Variable("name")
+                            Standard(": ")
+                            TypeName(kind: .struct, "Int")
+                        }
+                    }
+                    SemanticString {
+                        Keyword("func")
+                        Space()
+                        FunctionDeclaration("doWork")
+                        Standard("()")
+                    }
+                }
+            }
+        }
+
+        // The `Rows` block expands as three separate lines, each opened with
+        // `BreakLine + Indent(4)` — exactly as if the three items had been
+        // inlined directly into the enclosing `MemberList`. Followed by the
+        // `func` row, also separated by `BreakLine + Indent(4)`.
+        let expectedString = "struct Foo {\n    // offset: 0x10\n    // address: 0x1000\n    var name: Int\n    func doWork()\n}"
+        #expect(semanticString.string == expectedString)
+    }
+
+    @Test("Rows skips empty sub-rows so collapsed comments emit no stray blank lines")
+    func rowsSkipsEmptySubRows() {
+        let semanticString = SemanticString {
+            DeclarationBlock(level: 0) {
+                Keyword("struct")
+                Space()
+                TypeDeclaration(kind: .struct, "Foo")
+            } body: {
+                MemberList(level: 1) {
+                    Rows(level: 1) {
+                        // Empty sub-row — must not emit a stray break+indent.
+                        Standard("")
+                        Comment("address: 0x1000")
+                        // Another empty sub-row.
+                        Standard("")
+                        SemanticString {
+                            Keyword("var")
+                            Space()
+                            Variable("name")
+                            Standard(": ")
+                            TypeName(kind: .struct, "Int")
+                        }
+                    }
+                }
+            }
+        }
+
+        let expectedString = "struct Foo {\n    // address: 0x1000\n    var name: Int\n}"
+        #expect(semanticString.string == expectedString)
+    }
+
     @Test("Joined with builder-form prefix and suffix, mixed empty and non-empty items")
     func joinedBuilderPrefixSuffixMixed() {
         let joined = Joined(separator: ", ") {
