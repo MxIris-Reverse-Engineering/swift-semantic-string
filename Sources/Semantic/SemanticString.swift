@@ -47,6 +47,16 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     @usableFromInline
     var _storage: Storage
 
+    /// Transient identifier-scope stack used while a printer streams content
+    /// into this string. The innermost (last) entry stamps every appended
+    /// atomic component's `identifier`; a `nil` entry acts as a barrier that
+    /// suppresses stamping until a nested non-nil scope overrides it. This is
+    /// writer-side state only: it does not participate in equality, hashing,
+    /// or coding, and flattened components keep the stamps they were born
+    /// with.
+    @usableFromInline
+    var identifierScopeStack: [String?] = []
+
     /// Ensures unique ownership of storage for mutation (copy-on-write)
     @inlinable
     mutating func makeUnique() {
@@ -171,6 +181,25 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         components
     }
 
+    // MARK: - Identifier Scopes
+
+    /// Pushes an identifier scope. While the innermost scope is non-nil,
+    /// every string appended via `append(_:type:)` / `write(_:type:)` is
+    /// stamped with that identifier. Push `nil` to open a barrier scope that
+    /// suppresses stamping (e.g. punctuation between independent spans).
+    @inlinable
+    public mutating func pushIdentifierScope(_ identifier: String?) {
+        identifierScopeStack.append(identifier)
+    }
+
+    /// Pops the innermost identifier scope. Unbalanced pops are ignored.
+    @inlinable
+    public mutating func popIdentifierScope() {
+        if !identifierScopeStack.isEmpty {
+            identifierScopeStack.removeLast()
+        }
+    }
+
     // MARK: - Mutation
 
     @inlinable
@@ -178,7 +207,7 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         if !string.isEmpty {
             makeUnique()
             invalidateCache()
-            _storage.elements.append(AtomicComponent(string: string, type: type))
+            _storage.elements.append(AtomicComponent(string: string, type: type, identifier: identifierScopeStack.last ?? nil))
         }
     }
 
@@ -212,14 +241,14 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     @inlinable
     public func replacing(_ transform: (SemanticType) -> SemanticType) -> SemanticString {
-        map { AtomicComponent(string: $0.string, type: transform($0.type)) }
+        map { AtomicComponent(string: $0.string, type: transform($0.type), identifier: $0.identifier) }
     }
 
     @inlinable
     public func replacing(from types: SemanticType..., to newType: SemanticType) -> SemanticString {
         map { component in
             if types.contains(component.type) {
-                return AtomicComponent(string: component.string, type: newType)
+                return AtomicComponent(string: component.string, type: newType, identifier: component.identifier)
             } else {
                 return component
             }

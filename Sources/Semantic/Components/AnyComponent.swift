@@ -6,20 +6,59 @@
 ///
 /// You typically don't create `AtomicComponent` directly. Instead, use
 /// specific component types like `Keyword`, `TypeName`, or `Standard`.
-public struct AtomicComponent: AtomicSemanticComponent, Codable, Hashable {
+public struct AtomicComponent: AtomicSemanticComponent, Hashable {
     public let string: String
     public let type: SemanticType
 
+    /// Opaque identity of the enclosing reference span (e.g. a mangled type
+    /// name). Adjacent components sharing the same identifier form one
+    /// logical span for consumers such as link builders and selection.
+    public let identifier: String?
+
     @inlinable
-    public init(string: String, type: SemanticType) {
+    public init(string: String, type: SemanticType, identifier: String? = nil) {
         self.string = string
         self.type = type
+        self.identifier = identifier
     }
 
     @inlinable
     public init(_ component: some AtomicSemanticComponent) {
         self.string = component.string
         self.type = component.type
+        self.identifier = nil
+    }
+
+    /// Overrides the protocol default, which rebuilds a fresh
+    /// `AtomicComponent(string:type:)` and would silently drop `identifier`.
+    @inlinable
+    public func buildComponents() -> [AtomicComponent] {
+        if string.isEmpty {
+            return []
+        }
+        return [self]
+    }
+}
+
+extension AtomicComponent: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case string
+        case type
+        case identifier
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.string = try container.decode(String.self, forKey: .string)
+        self.type = try container.decode(SemanticType.self, forKey: .type)
+        self.identifier = try container.decodeIfPresent(String.self, forKey: .identifier)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(string, forKey: .string)
+        try container.encode(type, forKey: .type)
+        try container.encodeIfPresent(identifier, forKey: .identifier)
     }
 }
 
