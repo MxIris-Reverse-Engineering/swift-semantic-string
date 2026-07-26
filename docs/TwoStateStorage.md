@@ -41,9 +41,9 @@
 - 双数组 + `isFlat` 而非 enum payload：绕开 enum 关联值取出/写回在热路径上的 CoW 拷贝陷阱。
 - 全局锁而非每实例锁：填充仅每字符串一次且极短；代价是 TSan 插桩下 StressTests 的两个
   计时断言（缓存读 ≤2× 构建）超预算——无插桩运行通过，属预期。
-- 未做（押后为 O2）：text arena + 12–16 B Span 数组 + identifier 内插 + Codable 紧凑化。
-  实测 identifier 仅覆盖 8.4% token、distinct 只有 6,338 个，内插表可忽略不计；
-  O2 预计再省一半以上，且大幅缩小远程（XPC/TCP）传输量。
+- O2 已随后落地为独立的不可变终态类型，见
+  [FrozenSemanticString.md](FrozenSemanticString.md)：text arena + 8 B Span +
+  identifier 内插 + 列式 Codable，实测在 O1 基础上再降至 ~285 MB（基线 1.27 GB）。
 
 ## 影响与验证
 
