@@ -1,3 +1,5 @@
+import Foundation
+
 /// A string composed of semantically typed components.
 ///
 /// `SemanticString` is the primary type for building styled text output.
@@ -19,28 +21,100 @@
 /// }
 /// ```
 public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStringComponent {
-    /// Internal storage class for copy-on-write semantics
+    /// Internal storage class for copy-on-write semantics.
+    ///
+    /// Storage is two-state. Exactly one of the two arrays is populated at any
+    /// time; the other is empty:
+    ///
+    /// - **Flat** (`isFlat == true`, contents in `flatComponents`): a typed
+    ///   array of atomic components with no existential boxing. This is the
+    ///   representation for streamed content (`append(_:type:)` /
+    ///   `write(_:)`), for strings built directly from `[AtomicComponent]`
+    ///   (decoding, transformation), and for finalized strings after
+    ///   `compact()`. An `AtomicComponent` is 40 bytes — larger than the
+    ///   24-byte inline buffer of an existential container — so storing it as
+    ///   `any SemanticStringComponent` costs a 40-byte container *plus* a
+    ///   64-byte heap box per token; the typed array costs 40 bytes total.
+    /// - **Tree** (`isFlat == false`, contents in `treeElements`): the
+    ///   construction-time form that preserves element boundaries. Composite
+    ///   components (`DeclarationBlock`, `MemberList`, `Joined`, …) must stay
+    ///   whole here because `elements` granularity is semantic: containers
+    ///   like `MemberList` treat each element as one row.
+    ///
+    /// The invariant that keeps both forms observably identical to the
+    /// original single-array storage: the flat form only ever holds content
+    /// the old storage would have kept as individually boxed
+    /// `AtomicComponent` elements, so the `elements` view has the same
+    /// per-atom granularity in both representations. Composites never enter
+    /// the flat form; appending one to a flat string first converts the
+    /// existing atoms into tree elements (`convertToTree`).
     @usableFromInline
     final class Storage: @unchecked Sendable {
+        /// Discriminates which of the two content arrays is authoritative.
         @usableFromInline
-        var elements: [any SemanticStringComponent]
+        var isFlat: Bool
 
+        /// Authoritative contents when `isFlat == true`; empty otherwise.
+        @usableFromInline
+        var flatComponents: [AtomicComponent]
+
+        /// Authoritative contents when `isFlat == false`; empty otherwise.
+        @usableFromInline
+        var treeElements: [any SemanticStringComponent]
+
+        /// Flattened-components cache; only meaningful in the tree state
+        /// (the flat state's contents *are* the flattened components).
         @usableFromInline
         var cachedComponents: [AtomicComponent]?
 
         @usableFromInline
         var cachedString: String?
 
+        /// Single lock shared by all `Storage` instances, guarding the lazy
+        /// cache fills (`cachedComponents` / `cachedString`) that can race
+        /// when two threads read the same shared storage concurrently. A
+        /// per-instance lock would add an allocation to every transient
+        /// string a printer creates; fills are rare (once per string) and
+        /// the expensive flatten work happens outside the lock, so one
+        /// shared lock is uncontended in practice. All other mutations only
+        /// happen on uniquely-referenced storage (guarded by `makeUnique`)
+        /// and need no lock.
+        @usableFromInline
+        static let sharedCacheLock = NSLock()
+
         @inlinable
-        init(elements: [any SemanticStringComponent] = []) {
-            self.elements = elements
+        init(flatComponents: [AtomicComponent]) {
+            self.isFlat = true
+            self.flatComponents = flatComponents
+            self.treeElements = []
+        }
+
+        @inlinable
+        init(treeElements: [any SemanticStringComponent]) {
+            self.isFlat = false
+            self.flatComponents = []
+            self.treeElements = treeElements
         }
 
         @inlinable
         init(copying other: Storage) {
-            self.elements = other.elements
+            self.isFlat = other.isFlat
+            self.flatComponents = other.flatComponents
+            self.treeElements = other.treeElements
             self.cachedComponents = other.cachedComponents
             self.cachedString = other.cachedString
+        }
+
+        /// Rehouses flat atoms as boxed tree elements so a composite can be
+        /// appended. Granularity is unchanged: the old storage kept streamed
+        /// atoms as individually boxed elements anyway. Must only be called
+        /// on uniquely-referenced storage.
+        @usableFromInline
+        func convertToTree() {
+            guard isFlat else { return }
+            treeElements = flatComponents.map { $0 as any SemanticStringComponent }
+            flatComponents = []
+            isFlat = false
         }
     }
 
@@ -72,22 +146,49 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         _storage.cachedString = nil
     }
 
+    /// Element-boundary view of the contents. In the tree state each element
+    /// may be a whole composite; in the flat state every atom is its own
+    /// element (matching what the pre-two-state storage kept for streamed or
+    /// decoded strings, where each atom was appended as an individual boxed
+    /// element).
     @usableFromInline
     internal var elements: [any SemanticStringComponent] {
-        _storage.elements
+        if _storage.isFlat {
+            return _storage.flatComponents.map { $0 as any SemanticStringComponent }
+        } else {
+            return _storage.treeElements
+        }
     }
 
     public var components: [AtomicComponent] {
+        if _storage.isFlat {
+            return _storage.flatComponents
+        }
+
+        Storage.sharedCacheLock.lock()
         if let cached = _storage.cachedComponents {
+            Storage.sharedCacheLock.unlock()
             return cached
         }
+        Storage.sharedCacheLock.unlock()
+
+        // Flatten outside the lock: composite expansion can be expensive and
+        // must not serialize unrelated strings behind the shared lock. Two
+        // racing readers may both compute; the store below keeps the winner
+        // and both results are identical.
         var computed: [AtomicComponent] = []
-        computed.reserveCapacity(_storage.elements.count)
-        for element in _storage.elements {
+        computed.reserveCapacity(_storage.treeElements.count)
+        for element in _storage.treeElements {
             computed.append(contentsOf: element.buildComponents())
         }
-        _storage.cachedComponents = computed
-        return computed
+
+        Storage.sharedCacheLock.lock()
+        if _storage.cachedComponents == nil {
+            _storage.cachedComponents = computed
+        }
+        let result = _storage.cachedComponents ?? computed
+        Storage.sharedCacheLock.unlock()
+        return result
     }
 
     /// The number of components.
@@ -96,9 +197,13 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     /// The combined string of all components.
     public var string: String {
+        Storage.sharedCacheLock.lock()
         if let cached = _storage.cachedString {
+            Storage.sharedCacheLock.unlock()
             return cached
         }
+        Storage.sharedCacheLock.unlock()
+
         let atomicComponents = components
         var total = 0
         for atomicComponent in atomicComponents {
@@ -109,15 +214,23 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         for atomicComponent in atomicComponents {
             computed += atomicComponent.string
         }
-        _storage.cachedString = computed
-        return computed
+
+        Storage.sharedCacheLock.lock()
+        if _storage.cachedString == nil {
+            _storage.cachedString = computed
+        }
+        let result = _storage.cachedString ?? computed
+        Storage.sharedCacheLock.unlock()
+        return result
     }
 
     // MARK: - Collection-like Properties
 
     /// Returns `true` if the semantic string has no components.
     @inlinable
-    public var isEmpty: Bool { _storage.elements.isEmpty }
+    public var isEmpty: Bool {
+        _storage.isFlat ? _storage.flatComponents.isEmpty : _storage.treeElements.isEmpty
+    }
 
     /// Returns the first component, or `nil` if empty.
     @inlinable
@@ -131,7 +244,9 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     @inlinable
     public init() {
-        self._storage = Storage()
+        // Start flat: a string that only ever receives streamed atomic
+        // appends (the printer hot path) never boxes a single component.
+        self._storage = Storage(flatComponents: [])
     }
 
     @inlinable
@@ -141,35 +256,31 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     @inlinable
     public init(components: [any SemanticStringComponent]) {
-        self._storage = Storage(elements: components)
+        self._storage = Storage(treeElements: components)
     }
 
     @inlinable
     public init(components: [AtomicComponent]) {
-        self._storage = Storage(elements: components)
-        // Pre-cache since we already have atomic components
-        _storage.cachedComponents = components
+        self._storage = Storage(flatComponents: components)
     }
 
     @inlinable
     public init(components: AtomicComponent...) {
-        self._storage = Storage(elements: components)
-        _storage.cachedComponents = components
+        self._storage = Storage(flatComponents: components)
     }
 
     @inlinable
     public init(_ component: some SemanticStringComponent) {
-        self._storage = Storage(elements: [component])
+        self._storage = Storage(treeElements: [component])
     }
 
     @inlinable
     public init(stringLiteral value: StringLiteralType) {
         if value.isEmpty {
-            self._storage = Storage()
+            self._storage = Storage(flatComponents: [])
         } else {
             let component = AtomicComponent(string: value, type: .standard)
-            self._storage = Storage(elements: [component])
-            _storage.cachedComponents = [component]
+            self._storage = Storage(flatComponents: [component])
             _storage.cachedString = value
         }
     }
@@ -202,27 +313,103 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     // MARK: - Mutation
 
+    /// Appends a single atomic component, staying in the flat representation
+    /// when possible. Shared implementation for the stamping and
+    /// non-stamping public entry points.
+    @usableFromInline
+    internal mutating func appendAtomicComponent(_ atomicComponent: AtomicComponent) {
+        makeUnique()
+        invalidateCache()
+        if _storage.isFlat {
+            _storage.flatComponents.append(atomicComponent)
+        } else {
+            _storage.treeElements.append(atomicComponent)
+        }
+    }
+
     @inlinable
     public mutating func append(_ string: String, type: SemanticType) {
         if !string.isEmpty {
-            makeUnique()
-            invalidateCache()
-            _storage.elements.append(AtomicComponent(string: string, type: type, identifier: identifierScopeStack.last ?? nil))
+            appendAtomicComponent(AtomicComponent(string: string, type: type, identifier: identifierScopeStack.last ?? nil))
         }
     }
 
     @inlinable
     public mutating func append(_ component: some SemanticStringComponent) {
+        // Atomic components keep the flat fast path; composites force the
+        // tree form because their element boundary is semantic (one element
+        // may become one row in `MemberList`-style containers).
+        if let atomicComponent = component as? AtomicComponent {
+            appendAtomicComponent(atomicComponent)
+            return
+        }
         makeUnique()
         invalidateCache()
-        _storage.elements.append(component)
+        _storage.convertToTree()
+        _storage.treeElements.append(component)
     }
 
     @inlinable
     public mutating func append(_ semanticString: SemanticString) {
         makeUnique()
         invalidateCache()
-        _storage.elements.append(contentsOf: semanticString._storage.elements)
+        let otherStorage = semanticString._storage
+        if _storage.isFlat {
+            if otherStorage.isFlat {
+                _storage.flatComponents.append(contentsOf: otherStorage.flatComponents)
+            } else {
+                _storage.convertToTree()
+                _storage.treeElements.append(contentsOf: otherStorage.treeElements)
+            }
+        } else {
+            if otherStorage.isFlat {
+                // Splice per atom — identical to the pre-two-state behavior,
+                // where a decoded/streamed string held each atom as its own
+                // boxed element.
+                _storage.treeElements.append(contentsOf: otherStorage.flatComponents.map { $0 as any SemanticStringComponent })
+            } else {
+                _storage.treeElements.append(contentsOf: otherStorage.treeElements)
+            }
+        }
+    }
+
+    // MARK: - Compaction
+
+    /// Collapses the construction-time element tree into the flat typed
+    /// representation, releasing every composite component and existential
+    /// box the tree held.
+    ///
+    /// Call this when a string is **finalized** — fully built, about to be
+    /// stored, rendered, or encoded — and will never again be consumed
+    /// through its element boundaries (e.g. passed as prebuilt `content:` to
+    /// a `MemberList`-style container, where one element means one row).
+    /// After compaction the `elements` view exposes one element per atomic
+    /// component, which is also exactly what flattening produces, so
+    /// `components`, `string`, equality, hashing, and `Codable` output are
+    /// unchanged.
+    ///
+    /// Copies of this value made **before** compaction keep their own tree
+    /// (copy-on-write); compacting one value never mutates another.
+    ///
+    /// No-op when the storage is already flat.
+    public mutating func compact() {
+        if _storage.isFlat {
+            return
+        }
+        let flattened = components
+        makeUnique()
+        _storage.flatComponents = flattened
+        _storage.treeElements = []
+        _storage.isFlat = true
+        _storage.cachedComponents = nil
+    }
+
+    /// Returns a copy of this string with its storage compacted.
+    /// See `compact()`.
+    public func compacted() -> SemanticString {
+        var copy = self
+        copy.compact()
+        return copy
     }
 
     // MARK: - Enumeration
@@ -526,28 +713,39 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     // MARK: - Appending
 
     /// Returns a new semantic string with the other string appended.
+    ///
+    /// Matches the historical semantics of building a fresh string: the
+    /// result carries no identifier scopes, regardless of any scopes open
+    /// on `self`.
     @inlinable
     public func appending(_ other: SemanticString) -> SemanticString {
-        var newElements = _storage.elements
-        newElements.append(contentsOf: other._storage.elements)
-        return SemanticString(components: newElements)
+        var copy = self
+        copy.identifierScopeStack = []
+        copy.append(other)
+        return copy
     }
 
     /// Returns a new semantic string with the component appended.
     @inlinable
     public func appending(_ component: some SemanticStringComponent) -> SemanticString {
-        var newElements = _storage.elements
-        newElements.append(component)
-        return SemanticString(components: newElements)
+        var copy = self
+        copy.identifierScopeStack = []
+        copy.append(component)
+        return copy
     }
 
     /// Returns a new semantic string with the string appended.
+    ///
+    /// Unlike the mutating `append(_:type:)`, this never stamps identifier
+    /// scopes — matching its historical behavior of assembling a fresh
+    /// unscoped `AtomicComponent`.
     @inlinable
     public func appending(_ string: String, type: SemanticType = .standard) -> SemanticString {
         guard !string.isEmpty else { return self }
-        var newElements = _storage.elements
-        newElements.append(AtomicComponent(string: string, type: type))
-        return SemanticString(components: newElements)
+        var copy = self
+        copy.identifierScopeStack = []
+        copy.appendAtomicComponent(AtomicComponent(string: string, type: type))
+        return copy
     }
 
     // MARK: - Wrapping
