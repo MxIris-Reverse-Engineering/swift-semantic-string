@@ -14,11 +14,11 @@ swift test --filter SemanticStringTests 2>&1 | xcsift
 ```
 
 - Swift tools version: **6.2** — strict concurrency is on, so every public type must be `Sendable`.
-- No external dependencies.
+- No external dependencies. One system import: `os.lock`, for the striped `os_unfair_lock` cache table in `SemanticString.swift` (`Synchronization.Mutex` would require macOS 15, `NSLock` would drag in Foundation). Nothing else in the target imports anything.
 - Single library target `Semantic` + single test target `SemanticTests` (Swift Testing `@Suite` / `@Test` / `#expect`, not XCTest).
 - Deployment targets: macOS 10.15, iOS 13, macCatalyst 13, tvOS 13, watchOS 6, visionOS 1.
-- Test files: `SemanticStringTests` (core API), `CorrectnessTests` (behavior lock-down), `StressTests` (scale/depth/timing), `PerformanceRegressionTests` (allocation counts), `TwoStateStorageTests` (flat/tree transitions, `compact()` semantics, container granularity), `FrozenSemanticStringTests`.
-- Two timing assertions in `StressTests` exceed their budget under ThreadSanitizer instrumentation (the shared cache lock's cost); they pass uninstrumented. Judge timing regressions from an uninstrumented run.
+- Test files: `SemanticStringTests` (core API), `CorrectnessTests` (behavior lock-down), `StressTests` (scale/depth/timing), `PerformanceRegressionTests` (allocation counts), `TwoStateStorageTests` (flat/tree transitions, compaction semantics, container granularity), `StorageDivergenceRegressionTests` (behaviors that must hold in either storage form — written against API that exists on both sides of the two-state change, so it can be run against an older revision for comparison), `TwoStateStorageRegressionTests` (compaction, freezing, fast paths, read-while-mutate concurrency), `FrozenSemanticStringTests`.
+- Two timing assertions in `StressTests` exceed their budget under ThreadSanitizer instrumentation — the 50-level nested build (~125 ms against a 100 ms budget) and the 10k-component Codable round trip (~208 ms against 200 ms, which also exceeds on `main`). Both are instrumentation overhead against tight budgets, and both pass uninstrumented. Judge timing regressions from an uninstrumented run.
 
 ## Architecture
 
@@ -54,13 +54,23 @@ A **semantic string library** for building richly-typed text output (like `NSAtt
 
 Why: an `AtomicComponent` is 40 bytes, larger than the 24-byte existential inline buffer, so the tree form costs a 40-byte container **plus** a 64-byte heap box per token.
 
-**Invariant that keeps both forms observably identical:** the flat form only ever holds content the single-array storage would have kept as individually boxed atomic elements, so the `elements` view has the same per-atom granularity either way. Composites never enter the flat form.
+**Two invariants keep the forms observably identical.** Break either and the same content starts flattening differently depending on how it was built:
 
-**Cache locking:** the lazy `cachedComponents` / `cachedString` fills are guarded by `Storage.sharedCacheLock`, a single `NSLock` shared by all instances. The expensive flatten runs *outside* the lock (racing readers may both compute; results are identical, first store wins). It is shared rather than per-instance so printers creating masses of transient strings don't pay an allocation each. Every other mutation happens on uniquely-referenced storage via `makeUnique()` and needs no lock.
+1. **Granularity.** The flat form only ever holds content the single-array storage would have kept as individually boxed atomic elements, so the `elements` view has the same per-atom granularity either way. Composites never enter the flat form.
+2. **No zero-length components in `flatComponents`.** `components` returns the flat array verbatim, and tree flattening drops empty components (`AtomicComponent.buildComponents()` returns `[]`), so every write entry point into the flat form has to drop them too — `appendAtomicComponent(_:)` and the `[AtomicComponent]` initializers (via `droppingZeroLengthComponents(_:)`). Filtering on *read* instead would make `components` O(n) with an allocation and defeat the whole point of the flat form. When empty components did survive, `MemberList` grew blank indented rows and `Joined` emitted separators around nothing.
 
-**`compact()` / `compacted()`:** collapses a finalized tree to flat, releasing the composites and boxes. Only call at a storage boundary once the string is final — after compaction the `elements` view is one element per atom, so the value must not later be passed as prebuilt `content:` to a `MemberList`-style container. `components`, `string`, equality, hashing, and `Codable` output are unchanged. CoW copies made before compaction keep their own tree.
+**Cache locking:** the lazy `cachedComponents` / `cachedString` fills — and the matching reads in `Storage.init(copying:)`, which is the copy-on-write path — are guarded by `Storage.cacheLockStripes`, a table of 256 `os_unfair_lock`s indexed by mixed storage address. The expensive flatten runs *outside* the lock (racing readers may both compute; results are identical, first store wins). Every other mutation happens on uniquely-referenced storage via `makeUnique()` and needs no lock.
 
-For read-only content, prefer `frozen()` over `compact()`: it enforces the same lifecycle through the type system instead of a runtime convention. See `docs/TwoStateStorage.md` and `docs/FrozenSemanticString.md` for the design records and measurements.
+Two traps this design exists to avoid, both measured (8 threads x 50k transient strings, one cold fill each):
+
+- **One shared lock serializes unrelated strings.** That is the workload this type is built for, and it cost 434.9 ms against 46.6 ms for no lock at all — concurrent was slower than serial.
+- **Packed stripes trade lock contention for false sharing.** An `os_unfair_lock` is 4 bytes, so 32 of them share a cache line; threads locking *different* stripes still bounce the same line. Packed: 273 ms, indistinguishable from running the work on one thread. Hence `cacheLockStripeStride = 128` — one cache line per stripe. Spaced, 256 stripes: 44.7 ms.
+
+If you add stripes, keep the count a power of two (the index masks) and keep the stride at a cache line. `Storage.init(copying:)` is deliberately `@usableFromInline` rather than `@inlinable`: its body takes the lock, and a cross-module inlined body would have to expose the lock primitives.
+
+**`compact()` / `compacted()` are internal.** They collapse a finalized tree to flat, releasing the composites and boxes, and `frozen()` is the public way to get that. They stay internal because compaction changes what one element *means* — one row becomes one token — and nothing in the type system stops a compacted value from later being passed as prebuilt `content:` to a `MemberList`-style container, which would then render one row per token with no diagnostic. Don't re-publish them; extend `FrozenSemanticString` instead. `compact()` takes unique ownership *before* flattening, so it never publishes the flattened array into the cache of a value that is still sharing the storage.
+
+See `docs/TwoStateStorage.md`, `docs/FrozenSemanticString.md`, and `docs/StorageCorrectnessAndLockRework.md` for the design records and measurements.
 
 ### Design Patterns & Invariants
 
@@ -68,7 +78,9 @@ For read-only content, prefer `frozen()` over `compact()`: it enforces the same 
 - **Flattening happens once per mutation.** In the tree state `SemanticString.components` lazily expands `_storage.treeElements` and caches it; in the flat state it returns `flatComponents` directly (no flatten, no cache needed). `string` caches the concatenation. Don't bypass the cache by reaching into `_storage` directly.
 - **`SemanticType` ↔ `UInt8` codes are append-only.** `SemanticType.frozenTypeCode` (`FrozenSemanticString.swift`) is a storage/wire format: new cases take the next free code, existing assignments are **never** renumbered, or previously encoded frozen strings decode with the wrong styling. The inverse `init?(frozenTypeCode:)` returns `nil` for unknown codes and callers resolve those to `.other` rather than crashing.
 - **Span lengths are `UInt16`.** A token over 65535 UTF-8 bytes is split into consecutive spans with identical type and identifier, at Unicode scalar boundaries. Consumers that concatenate or attribute runs see no difference, but a test comparing token counts one-by-one against `SemanticString.components` will.
-- **Empty strings are filtered at the atomic level** — `AtomicSemanticComponent.buildComponents()` returns `[]` for empty `string`, so composite components can assume their children produce no empty noise.
+- **Empty strings are filtered at the atomic level** — `AtomicSemanticComponent.buildComponents()` returns `[]` for empty `string`, so composite components can assume their children produce no empty noise. The flat storage form upholds the same rule at its write entry points; see invariant 2 above.
+- **`isEmpty` means "flattens to nothing", not "has no elements".** Flat state: `flatComponents.isEmpty`, O(1) by invariant 2. Tree state: a non-empty element array still consults the flattened form, because an element can flatten to nothing (`EmptyComponent`, an empty composite). Deciding it from element counts makes compaction flip `isEmpty` from `false` to `true`.
+- **Every `AtomicSemanticComponent` gets the flat fast path.** `append` has three overloads — exact `AtomicComponent` (keeps `identifier`), generic `some AtomicSemanticComponent` (statically resolved, so `Keyword` / `Space` / `Indent` / `TypeName` never box), and generic `some SemanticStringComponent` for composites, which also falls back to the flat path for leaves arriving through an existential. A new leaf component type needs no wiring; a new *composite* must not accidentally satisfy `AtomicSemanticComponent`.
 - **`Indent` uses 4 spaces per level.** `DeclarationBlock` and `MemberList` both compute their own indentation using this 4-space rule (see `Components/Block.swift`); keep new layout components consistent.
 - **Pre-computed singletons in `CommonAtomicComponents`** (`Components/Other.swift`) — reuse `CommonAtomicComponents.space` / `.breakLine` in new composite components instead of allocating new `AtomicComponent` values each time.
 - **Composite components own their own whitespace.** `NestedDeclaration` prepends a `BreakLine`; `MemberList` emits `BreakLine + indent` before each item plus a trailing `BreakLine`; `BlockList` emits a leading `BreakLine` before each item and a trailing one. When composing these, don't double-add newlines.

@@ -23,7 +23,9 @@ identifierTable: [String]    identifier 内插表（1-based；0 = 无）
 ```
 
 - **单向冻结**：`SemanticString.frozen()`；无 mutation API、不提供反向转换。
-  「构建完再也不改」由类型系统保证，取代 O1 里 `compact()` 的运行时约定。
+  「构建完再也不改」由类型系统保证，取代 O1 里 `compact()` 的运行时约定
+  （`2dc9bcf` 起 `compact()` 已降为内部 API，`frozen()` 是唯一公开出口）。
+  `frozen()` 直接复用已缓存的 `string` 作为 text arena，不再重新逐 token 拼接。
 - **全 `let`** ⇒ 无条件 `Sendable`，无锁、无 `@unchecked`。
 - Span 只存长度不存偏移，消费方顺序累加（渲染本来就是顺序遍历）。
 - 超过 `UInt16.max` UTF-8 字节的 token 在 **Unicode scalar 边界**拆成相邻同类
@@ -32,7 +34,9 @@ identifierTable: [String]    identifier 内插表（1-based；0 = 无）
   落到 `.other` 而非崩溃。
 - **Codable 列式编码**（text + 四个同质数组），比 SemanticString 的
   逐-token-字典编码小一个数量级——远程（XPC/TCP）传 interface 直接受益。
-  解码校验列数一致、长度覆盖全文、identifier 索引在表内。
+  解码校验列数一致、长度覆盖全文、identifier 索引在表内、**每个 span 边界落在
+  Unicode 标量边界上**（最后一项在 `2dc9bcf` 补齐：只校验字节覆盖量不足以拒绝把标量
+  切成两半的载荷，而 String 的索引取整会把这种错位悄悄吸收掉，使后续所有 span 都切错）。
 
 ## 实测（RuntimeViewer 探针，AppKit + SwiftUI 全量打印，346 万 token）
 

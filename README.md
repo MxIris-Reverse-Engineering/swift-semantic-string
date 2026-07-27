@@ -306,21 +306,8 @@ Notes:
 - `Span.length` is a `UInt16`, so a token longer than 65535 UTF-8 bytes is split into consecutive spans carrying the same type and identifier, at Unicode scalar boundaries. Consumers that concatenate text or attribute runs see no difference; a token-by-token count comparison against `SemanticString.components` will.
 - `FrozenSemanticString` conforms to `Codable` with a columnar encoding (one string plus four homogeneous arrays) an order of magnitude smaller on the wire than `SemanticString`'s array-of-objects form. The two formats are intentionally **not** interchangeable — both ends of any persistence or cross-process channel must agree on which one they use.
 - `SemanticType` values encode to stable `UInt8` codes. Codes are assigned append-only, and a code from a newer version decodes as `.other` rather than failing.
-
-## Compacting a Built String
-
-When a `SemanticString` must stay mutable but its construction is finished, `compact()` collapses the component tree into a flat typed array, releasing the composite components and their existential boxes:
-
-```swift
-var declaration = SemanticString { ... }
-declaration.compact()
-
-let compacted = declaration.compacted()  // non-mutating variant
-```
-
-`components`, `string`, equality, hashing, and `Codable` output are all unchanged. The one constraint: after compaction the value exposes one element per atomic component, so it must not be passed afterwards as prebuilt `content:` to a container like `MemberList` that treats one element as one row. Call it at a storage boundary, not mid-build.
-
-Prefer `frozen()` when the content is genuinely read-only — it enforces the same lifecycle through the type system instead of by convention.
+- Freeze at a storage boundary — once the string is final. There is deliberately no way to compact a `SemanticString` in place and keep building with it: the element boundaries a builder exposes are semantic (a container like `MemberList` treats one element as one row), and collapsing them silently changes layout. `frozen()` gives you the compact representation with that lifecycle enforced by the type.
+- Decoding validates its input: column counts must agree, span lengths must cover the text exactly, identifier indices must be in range, and every span boundary must fall on a Unicode scalar boundary. The unchecked `init(text:spans:identifierTable:)` trusts the caller instead — use it only for parts you produced yourself.
 
 ## License
 
