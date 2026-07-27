@@ -83,12 +83,16 @@ struct TwoStateStorageTests {
         #expect(semanticString.components == [AtomicComponent(string: "x", type: .variable)])
     }
 
-    @Test("Appending a non-atomic leaf component through the generic overload converts to tree")
-    func genericLeafComponentAppendConvertsToTree() {
+    @Test("Appending a first-class leaf component keeps the flat representation")
+    func genericLeafComponentAppendStaysFlat() {
+        // `Keyword` and friends flatten to exactly one `AtomicComponent`, so
+        // the dedicated `AtomicSemanticComponent` overload takes them down the
+        // flat path — no existential boxing, and no conversion of the atoms
+        // accumulated so far.
         var semanticString = SemanticString()
         semanticString.append("prefix", type: .standard)
         semanticString.append(Keyword("func"))
-        #expect(!semanticString._storage.isFlat)
+        #expect(semanticString._storage.isFlat)
         #expect(semanticString.string == "prefixfunc")
         #expect(semanticString.components.last?.type == .keyword)
     }

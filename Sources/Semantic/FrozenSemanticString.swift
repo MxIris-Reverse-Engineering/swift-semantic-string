@@ -1,5 +1,3 @@
-import Foundation
-
 /// An immutable, memory-compact snapshot of a `SemanticString`.
 ///
 /// `SemanticString` is the *builder*: composable, streamable, mutable.
@@ -36,6 +34,7 @@ public struct FrozenSemanticString: Sendable, Hashable {
         /// 1-based index into `identifierTable`; `0` means no identifier.
         public let identifierIndex: UInt32
 
+        @inlinable
         public init(length: UInt16, typeCode: UInt8, identifierIndex: UInt32) {
             self.length = length
             self.typeCode = typeCode
@@ -58,6 +57,7 @@ public struct FrozenSemanticString: Sendable, Hashable {
     /// `typeCode` is valid, every non-zero `identifierIndex` is in range);
     /// `SemanticString.frozen()` and `Codable` decoding are the validated
     /// construction paths.
+    @inlinable
     public init(text: String, spans: [Span], identifierTable: [String]) {
         self.text = text
         self.spans = spans
@@ -85,6 +85,7 @@ extension FrozenSemanticString {
     ///
     /// Spans whose `typeCode` no longer maps to a `SemanticType` (decoded
     /// from a future encoder) resolve to `.other` rather than crashing.
+    @inlinable
     public func enumerateSpans(_ body: (_ spanText: Substring, _ type: SemanticType, _ identifier: String?) -> Void) {
         var lowerBound = text.startIndex
         let utf8View = text.utf8
@@ -104,6 +105,7 @@ extension FrozenSemanticString {
     /// cost that freezing removed, so hot paths should prefer
     /// `enumerateSpans(_:)`. Tokens that were split at the `UInt16.max`
     /// length limit remain split here.
+    @inlinable
     public var components: [AtomicComponent] {
         var result: [AtomicComponent] = []
         result.reserveCapacity(spans.count)
@@ -119,16 +121,18 @@ extension FrozenSemanticString {
 extension SemanticString {
     /// Returns the immutable, memory-compact snapshot of this string.
     /// See `FrozenSemanticString`.
+    @inlinable
     public func frozen() -> FrozenSemanticString {
         let atomicComponents = components
 
-        var totalUTF8ByteCount = 0
-        for component in atomicComponents {
-            totalUTF8ByteCount += component.string.utf8.count
-        }
+        // Zero-length components contribute no bytes, so concatenating the
+        // non-empty ones is by construction exactly `string` — which is
+        // already cached on any value that has been rendered, measured, or
+        // compared. Rebuilding it here would walk every component a second
+        // time and allocate a full-text buffer beside the live one, on the
+        // very call whose purpose is to reduce footprint.
+        let text = string
 
-        var text = ""
-        text.reserveCapacity(totalUTF8ByteCount)
         var spans: [FrozenSemanticString.Span] = []
         spans.reserveCapacity(atomicComponents.count)
         var identifierTable: [String] = []
@@ -155,7 +159,6 @@ extension SemanticString {
                 identifierIndex = 0
             }
 
-            text += component.string
             Self.appendSpans(
                 forTokenWithUTF8ByteCount: componentUTF8ByteCount,
                 tokenString: component.string,
@@ -170,7 +173,8 @@ extension SemanticString {
 
     /// Emits one span for the common case, or several scalar-aligned spans
     /// when a single token exceeds `UInt16.max` UTF-8 bytes.
-    private static func appendSpans(
+    @usableFromInline
+    internal static func appendSpans(
         forTokenWithUTF8ByteCount utf8ByteCount: Int,
         tokenString: String,
         typeCode: UInt8,
@@ -206,6 +210,7 @@ extension SemanticType {
     /// Append-only: existing assignments must never be renumbered, or
     /// previously encoded frozen strings decode with wrong styling. New
     /// `SemanticType` cases get the next free code.
+    @inlinable
     public var frozenTypeCode: UInt8 {
         switch self {
         case .standard: return 0
@@ -235,6 +240,7 @@ extension SemanticType {
 
     /// Inverse of `frozenTypeCode`. Returns `nil` for codes this version
     /// does not know (encoded by a future version).
+    @inlinable
     public init?(frozenTypeCode: UInt8) {
         switch frozenTypeCode {
         case 0: self = .standard
@@ -310,6 +316,24 @@ extension FrozenSemanticString: Codable {
                 throw DecodingError.dataCorrupted(.init(
                     codingPath: decoder.codingPath,
                     debugDescription: "Identifier index \(identifierIndex) exceeds table of \(identifierTable.count)"
+                ))
+            }
+        }
+        // Covering the right number of bytes is not enough: a boundary in the
+        // middle of a multi-byte scalar passes the coverage check and then
+        // makes `enumerateSpans` hand out slices that do not correspond to the
+        // spans — silently, because String index rounding absorbs the
+        // misalignment. Walk the boundaries once and reject them here, where
+        // the payload is still identifiable as corrupt. Safe to walk now: the
+        // coverage check above proved the offsets stay in bounds.
+        let utf8View = text.utf8
+        var spanBoundary = utf8View.startIndex
+        for length in spanLengths {
+            spanBoundary = utf8View.index(spanBoundary, offsetBy: Int(length))
+            guard spanBoundary.samePosition(in: text.unicodeScalars) != nil else {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Span boundary at UTF-8 offset \(utf8View.distance(from: utf8View.startIndex, to: spanBoundary)) splits a Unicode scalar"
                 ))
             }
         }

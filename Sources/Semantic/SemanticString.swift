@@ -1,4 +1,4 @@
-import Foundation
+import os.lock
 
 /// A string composed of semantically typed components.
 ///
@@ -48,6 +48,16 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     /// per-atom granularity in both representations. Composites never enter
     /// the flat form; appending one to a flat string first converts the
     /// existing atoms into tree elements (`convertToTree`).
+    ///
+    /// The second invariant, which lets `components` hand out
+    /// `flatComponents` directly instead of re-filtering it on every read:
+    /// **`flatComponents` never contains a zero-length component.** Tree
+    /// flattening drops those (`AtomicComponent.buildComponents()` returns
+    /// `[]` for an empty string), so every entry point into the flat form has
+    /// to drop them as well or the two representations would disagree on
+    /// component counts, equality, and container layout. The entry points are
+    /// `appendAtomicComponent(_:)`, the `[AtomicComponent]` initializers, and
+    /// `compact()` — which is fed already-filtered flattening output.
     @usableFromInline
     final class Storage: @unchecked Sendable {
         /// Discriminates which of the two content arrays is authoritative.
@@ -70,17 +80,63 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         @usableFromInline
         var cachedString: String?
 
-        /// Single lock shared by all `Storage` instances, guarding the lazy
-        /// cache fills (`cachedComponents` / `cachedString`) that can race
-        /// when two threads read the same shared storage concurrently. A
-        /// per-instance lock would add an allocation to every transient
-        /// string a printer creates; fills are rare (once per string) and
-        /// the expensive flatten work happens outside the lock, so one
-        /// shared lock is uncontended in practice. All other mutations only
-        /// happen on uniquely-referenced storage (guarded by `makeUnique`)
-        /// and need no lock.
+        /// Number of stripes in the cache lock table. Must be a power of two
+        /// so `stripeIndex` can mask instead of divide.
         @usableFromInline
-        static let sharedCacheLock = NSLock()
+        static let cacheLockStripeCount = 256
+
+        /// Bytes between adjacent stripes. An `os_unfair_lock` is 4 bytes, so
+        /// packing the stripes would put 32 of them on one cache line: threads
+        /// locking *different* stripes would still bounce the same line between
+        /// cores, and the table would serialize as badly as a single lock
+        /// (measured: as slow as running the same work on one thread). One
+        /// cache line per stripe removes that false sharing.
+        @usableFromInline
+        static let cacheLockStripeStride = 128
+
+        /// Striped locks guarding the lazy cache fills (`cachedComponents` /
+        /// `cachedString`) that can race when two threads read the same shared
+        /// storage concurrently, and the matching reads in `init(copying:)`.
+        ///
+        /// A single process-wide lock serializes the cache fills of unrelated
+        /// strings, which is the dominant cost when several threads each build
+        /// masses of transient strings — the exact workload this type is
+        /// optimized for. A lock per instance would instead add an allocation
+        /// to every transient string. Striping by storage address gets both:
+        /// no per-instance allocation, and contention only between the rare
+        /// pair of live storages that land on the same stripe.
+        ///
+        /// All other mutations only happen on uniquely-referenced storage
+        /// (guarded by `makeUnique`) and need no lock.
+        /// `nonisolated(unsafe)` because the pointer itself is immutable after
+        /// the one-time allocation; what it points at is mutable precisely so
+        /// `os_unfair_lock` can do its job, and that memory is only ever
+        /// touched through the lock primitives.
+        @usableFromInline
+        nonisolated(unsafe) static let cacheLockStripes: UnsafeMutableRawPointer = {
+            let byteCount = cacheLockStripeCount * cacheLockStripeStride
+            let stripes = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: cacheLockStripeStride)
+            for stripeIndex in 0 ..< cacheLockStripeCount {
+                stripes.advanced(by: stripeIndex * cacheLockStripeStride)
+                    .initializeMemory(as: os_unfair_lock_s.self, repeating: os_unfair_lock_s(), count: 1)
+            }
+            return stripes
+        }()
+
+        /// The stripe this instance's cache fills serialize on. Object
+        /// addresses are at least 16-byte aligned, so the low bits carry no
+        /// entropy — shift them out, then mix so that consecutive allocations
+        /// (which a printer produces by the thousand) spread across the table
+        /// instead of marching through it in lockstep.
+        @usableFromInline
+        var cacheLock: UnsafeMutablePointer<os_unfair_lock_s> {
+            let address = UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque())
+            let mixed = (address >> 4) &* 0x9E37_79B9_7F4A_7C15
+            let stripeIndex = Int((mixed >> 32) & UInt(Self.cacheLockStripeCount - 1))
+            return Self.cacheLockStripes
+                .advanced(by: stripeIndex * Self.cacheLockStripeStride)
+                .assumingMemoryBound(to: os_unfair_lock_s.self)
+        }
 
         @inlinable
         init(flatComponents: [AtomicComponent]) {
@@ -96,13 +152,24 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
             self.treeElements = treeElements
         }
 
-        @inlinable
+        /// Deliberately not `@inlinable`: the body touches the cache under
+        /// `other`'s stripe lock, and a cross-module inlined body would have
+        /// to expose the locking primitives too. One non-inlined call per
+        /// copy-on-write copy is not measurable next to copying the arrays.
+        @usableFromInline
         init(copying other: Storage) {
+            // `isFlat` and the two content arrays are only ever mutated on
+            // uniquely-referenced storage, and `other` is shared by definition
+            // here, so they need no lock. The cache fields are the exception:
+            // a concurrent reader may be filling them right now.
             self.isFlat = other.isFlat
             self.flatComponents = other.flatComponents
             self.treeElements = other.treeElements
+            let cacheLock = other.cacheLock
+            os_unfair_lock_lock(cacheLock)
             self.cachedComponents = other.cachedComponents
             self.cachedString = other.cachedString
+            os_unfair_lock_unlock(cacheLock)
         }
 
         /// Rehouses flat atoms as boxed tree elements so a composite can be
@@ -165,30 +232,39 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
             return _storage.flatComponents
         }
 
-        Storage.sharedCacheLock.lock()
+        let cacheLock = _storage.cacheLock
+        os_unfair_lock_lock(cacheLock)
         if let cached = _storage.cachedComponents {
-            Storage.sharedCacheLock.unlock()
+            os_unfair_lock_unlock(cacheLock)
             return cached
         }
-        Storage.sharedCacheLock.unlock()
+        os_unfair_lock_unlock(cacheLock)
 
         // Flatten outside the lock: composite expansion can be expensive and
-        // must not serialize unrelated strings behind the shared lock. Two
+        // must not serialize the other storages sharing this stripe. Two
         // racing readers may both compute; the store below keeps the winner
         // and both results are identical.
+        let computed = flattenedTreeElements()
+
+        os_unfair_lock_lock(cacheLock)
+        if _storage.cachedComponents == nil {
+            _storage.cachedComponents = computed
+        }
+        let result = _storage.cachedComponents ?? computed
+        os_unfair_lock_unlock(cacheLock)
+        return result
+    }
+
+    /// Expands the tree elements. Callers are responsible for publishing the
+    /// result into the cache (or deliberately not publishing it).
+    @usableFromInline
+    internal func flattenedTreeElements() -> [AtomicComponent] {
         var computed: [AtomicComponent] = []
         computed.reserveCapacity(_storage.treeElements.count)
         for element in _storage.treeElements {
             computed.append(contentsOf: element.buildComponents())
         }
-
-        Storage.sharedCacheLock.lock()
-        if _storage.cachedComponents == nil {
-            _storage.cachedComponents = computed
-        }
-        let result = _storage.cachedComponents ?? computed
-        Storage.sharedCacheLock.unlock()
-        return result
+        return computed
     }
 
     /// The number of components.
@@ -197,12 +273,13 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     /// The combined string of all components.
     public var string: String {
-        Storage.sharedCacheLock.lock()
+        let cacheLock = _storage.cacheLock
+        os_unfair_lock_lock(cacheLock)
         if let cached = _storage.cachedString {
-            Storage.sharedCacheLock.unlock()
+            os_unfair_lock_unlock(cacheLock)
             return cached
         }
-        Storage.sharedCacheLock.unlock()
+        os_unfair_lock_unlock(cacheLock)
 
         let atomicComponents = components
         var total = 0
@@ -215,21 +292,32 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
             computed += atomicComponent.string
         }
 
-        Storage.sharedCacheLock.lock()
+        os_unfair_lock_lock(cacheLock)
         if _storage.cachedString == nil {
             _storage.cachedString = computed
         }
         let result = _storage.cachedString ?? computed
-        Storage.sharedCacheLock.unlock()
+        os_unfair_lock_unlock(cacheLock)
         return result
     }
 
     // MARK: - Collection-like Properties
 
-    /// Returns `true` if the semantic string has no components.
+    /// Returns `true` if this string flattens to no components.
+    ///
+    /// In the flat state this is `O(1)`: the flat form never holds zero-length
+    /// components, so an empty array is the only way to flatten to nothing. In
+    /// the tree state the element count alone is not enough — an element can
+    /// flatten to nothing (`EmptyComponent`, a composite with no items) — so a
+    /// non-empty tree consults the flattened form, which is cached after the
+    /// first read. Deciding this from element counts instead makes `compact()`
+    /// observably flip `isEmpty` from `false` to `true`.
     @inlinable
     public var isEmpty: Bool {
-        _storage.isFlat ? _storage.flatComponents.isEmpty : _storage.treeElements.isEmpty
+        if _storage.isFlat {
+            return _storage.flatComponents.isEmpty
+        }
+        return _storage.treeElements.isEmpty || components.isEmpty
     }
 
     /// Returns the first component, or `nil` if empty.
@@ -261,12 +349,23 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     @inlinable
     public init(components: [AtomicComponent]) {
-        self._storage = Storage(flatComponents: components)
+        self._storage = Storage(flatComponents: Self.droppingZeroLengthComponents(components))
     }
 
     @inlinable
     public init(components: AtomicComponent...) {
-        self._storage = Storage(flatComponents: components)
+        self._storage = Storage(flatComponents: Self.droppingZeroLengthComponents(components))
+    }
+
+    /// Upholds the flat form's "no zero-length components" invariant for
+    /// caller-supplied arrays. Scans first so the common case — nothing to
+    /// drop — keeps the array as is instead of reallocating it.
+    @usableFromInline
+    internal static func droppingZeroLengthComponents(_ components: [AtomicComponent]) -> [AtomicComponent] {
+        if components.contains(where: { $0.string.isEmpty }) {
+            return components.filter { !$0.string.isEmpty }
+        }
+        return components
     }
 
     @inlinable
@@ -318,6 +417,11 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     /// non-stamping public entry points.
     @usableFromInline
     internal mutating func appendAtomicComponent(_ atomicComponent: AtomicComponent) {
+        // Upholds the flat form's "no zero-length components" invariant, and
+        // matches what tree flattening does with the same component.
+        if atomicComponent.string.isEmpty {
+            return
+        }
         makeUnique()
         invalidateCache()
         if _storage.isFlat {
@@ -334,13 +438,37 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         }
     }
 
+    /// Exact-match overload for the erased leaf type, which carries an
+    /// `identifier` that the generic leaf overload's conversion would drop.
+    @inlinable
+    public mutating func append(_ component: AtomicComponent) {
+        appendAtomicComponent(component)
+    }
+
+    /// Flat fast path for first-class leaf components — `Keyword`, `Space`,
+    /// `BreakLine`, `Indent`, `TypeName`, and every other
+    /// `AtomicSemanticComponent`. Overload resolution picks this statically,
+    /// so streaming them costs no dynamic cast and, unlike the composite
+    /// overload, never re-boxes the atoms accumulated so far into tree
+    /// elements.
+    @inlinable
+    public mutating func append(_ component: some AtomicSemanticComponent) {
+        appendAtomicComponent(AtomicComponent(component))
+    }
+
     @inlinable
     public mutating func append(_ component: some SemanticStringComponent) {
-        // Atomic components keep the flat fast path; composites force the
-        // tree form because their element boundary is semantic (one element
-        // may become one row in `MemberList`-style containers).
+        // Composites force the tree form because their element boundary is
+        // semantic (one element may become one row in `MemberList`-style
+        // containers). Leaves that reach this overload through an existential
+        // — from `appending(_:)`, `+=`, or a caller holding
+        // `any SemanticStringComponent` — still take the flat path.
         if let atomicComponent = component as? AtomicComponent {
             appendAtomicComponent(atomicComponent)
+            return
+        }
+        if let atomicComponent = component as? any AtomicSemanticComponent {
+            appendAtomicComponent(AtomicComponent(atomicComponent))
             return
         }
         makeUnique()
@@ -392,12 +520,25 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     /// (copy-on-write); compacting one value never mutates another.
     ///
     /// No-op when the storage is already flat.
-    public mutating func compact() {
+    ///
+    /// Internal on purpose. Compaction changes what one `elements` entry means
+    /// — from one row to one token — and nothing in the type system stops a
+    /// compacted value from later being handed to a `MemberList`-style
+    /// container as prebuilt `content:`, where it silently renders one row per
+    /// token. `frozen()` gives callers the same memory win with that lifecycle
+    /// enforced by the type instead of by convention.
+    @usableFromInline
+    internal mutating func compact() {
         if _storage.isFlat {
             return
         }
-        let flattened = components
+        // Take unique ownership *first*. Flattening through `components` while
+        // the storage is still shared publishes the flattened array into the
+        // cache of every other value sharing it — leaving a value that never
+        // asked for it holding a full `[AtomicComponent]`, which is the
+        // opposite of what a memory-reducing API should do.
         makeUnique()
+        let flattened = _storage.cachedComponents ?? flattenedTreeElements()
         _storage.flatComponents = flattened
         _storage.treeElements = []
         _storage.isFlat = true
@@ -406,7 +547,8 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     /// Returns a copy of this string with its storage compacted.
     /// See `compact()`.
-    public func compacted() -> SemanticString {
+    @usableFromInline
+    internal func compacted() -> SemanticString {
         var copy = self
         copy.compact()
         return copy
