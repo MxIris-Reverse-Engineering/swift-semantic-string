@@ -45,6 +45,7 @@
   两个 revision 都有的 API，可在 `main` 上原样跑作对照）
 - 新增 `Tests/SemanticTests/TwoStateStorageRegressionTests.swift`（8 个测试，覆盖本分支
   新增的 `compact()` / `frozen()` / 快路径 / 并发）
+- 新增 `Tests/SemanticTests/ConcurrencyTests.swift`（17 个测试，见下文「并发测试」一节）
 - 修改 `TwoStateStorageTests` 中一处把快路径缺失钉成预期行为的断言
 
 ## 关键设计与取舍
@@ -151,12 +152,13 @@ target 只有一个 `import os.lock`。
 | 缓存命中读（20 万次 `.string`） | 1.95 ms | 4.00 ms | **2.89 ms** |
 | ThreadSanitizer 竞争数（读+改同一存储） | 26 | 3 | **0** |
 
-- 303 个测试在 debug 与 release 下全部通过；全套在 ThreadSanitizer 下零竞争报告。
+- 320 个测试在 debug 与 release 下全部通过；全套在 ThreadSanitizer 下零竞争报告。
 - 计时断言现状：AGENTS.md 此前点名的两个缓存读断言
   （`repeatedStringReadsAreCached` / `repeatedComponentsReadsAreCached`）现在在
-  TSan 下也通过。TSan 下仍超预算的是另外两条——`StressTests` 的 50 层嵌套构建
-  （124.8 ms / 预算 100 ms）与 1 万组件编解码往返（207.8 ms / 预算 200 ms），后者在
-  `main` 上同样超（200.5 ms）。属预算偏紧加插桩开销，与锁无关。
+  TSan 下也通过。TSan 下全套会报三条 `StressTests` 计时超预算，但加 `--no-parallel`
+  后只剩一条——1 万组件编解码往返（207.8 ms / 预算 200 ms），且它在 `main` 上同样超
+  （200.5 ms）。另两条是测试并行执行时的 CPU 争抢，不是回归。计时结论一律从未插桩的
+  运行里取。
 
 **行为变更清单**（下游需要知道的三条）：
 
@@ -164,6 +166,40 @@ target 只有一个 `import os.lock`。
 2. `compact()` / `compacted()` 不再是公开 API。
 3. `FrozenSemanticString` 的解码更严格：span 边界切开 Unicode 标量的载荷现在抛
    `DecodingError.dataCorrupted`，而不是静默切错后续所有 span。
+
+## 并发测试与其有效性验证
+
+并发相关的契约集中在 `Tests/SemanticTests/ConcurrencyTests.swift`（17 个测试）：共享值的
+各类派生读取、两个缓存的交叉填充顺序、写时复制的隔离性、flat 态无锁读与副本改动并发、
+派生变换（`map` / `replacing` / `filter` / trimming / 下标）、并发编码、并发 `frozen()`、
+frozen 值的无同步并发读、跨 actor 边界的值语义，以及锁顺序。
+
+**这些测试在普通运行下几乎必然通过——断言本身抓不到竞争。** 因此逐条做了变异验证
+（故意把修复回退，看测试是否变红），确认它们不是装饰：
+
+| 变异 | 结果 |
+|---|---|
+| 去掉 `Storage.init(copying:)` 的锁 | TSan 竞争 0 → **22**，栈顶指向复制路径 |
+| 去掉 `string` 缓存发布的锁 | TSan 竞争 0 → **82**，但**全部断言仍通过** |
+| 把展平移到锁内 | 死锁守卫测试**挂住**（确定性，非概率） |
+
+第二行是这批测试存在的理由：断言全绿而竞争 82 条。判断并发是否安全只能看
+`swift test --sanitize=thread`，不能看测试是否通过。
+
+### 一个反直觉的发现：分片哈希对固定间隔的对象对是线性的
+
+写「锁内展平会死锁」这条守卫时，最初的做法是构造大量嵌套对、期待其中若干对的 outer 与
+inner 落在同一分片（1/256 的概率，4096 对应该期望 16 次碰撞）。**实测碰撞 0 次。**
+
+原因是分片索引是地址的乘法哈希，而乘法是线性的：循环里以相同方式构造的每一对，两个
+storage 的地址差是固定的，于是分片索引差也是固定的常数——要么恒等（永远碰撞），要么恒
+不等（永远不碰撞）。改为变化「两次分配之间插入多少其它对象」，碰撞就按固定周期出现
+（当前分片数下为 186、373、560、747……）。守卫测试因此改为主动搜索一个碰撞间隔，并断言
+「确实找到了」，避免将来分片函数一改就静默退化成什么都没测。
+
+这对锁的性能没有影响（相邻对象仍然落在不同分片，实测数据见上表）。但它意味着「持锁时
+回调组件代码」这类风险在真实分配模式下是**要么永不出现、要么必然出现**——正是最难在测试
+里碰上、却会在生产里稳定复现的那类问题。当前实现在锁外展平，从结构上排除了它。
 
 ## 迁移注意
 
