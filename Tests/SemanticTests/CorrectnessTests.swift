@@ -580,7 +580,6 @@ struct CacheCoherenceTests {
         // Explicitly assert internal cache was cleared so that a future bug
         // removing invalidateCache() cannot be masked by coincidence.
         #expect(semanticString._storage.cachedString == nil)
-        #expect(semanticString._storage.cachedComponents == nil)
 
         let postString = semanticString.string
         let postComponents = semanticString.components
@@ -602,7 +601,6 @@ struct CacheCoherenceTests {
 
         // Explicitly assert internal cache was cleared.
         #expect(semanticString._storage.cachedString == nil)
-        #expect(semanticString._storage.cachedComponents == nil)
 
         let postString = semanticString.string
         let postComponents = semanticString.components
@@ -626,7 +624,6 @@ struct CacheCoherenceTests {
 
         // Explicitly assert internal cache was cleared.
         #expect(semanticString._storage.cachedString == nil)
-        #expect(semanticString._storage.cachedComponents == nil)
 
         let postString = semanticString.string
         let postComponents = semanticString.components
@@ -652,7 +649,6 @@ struct CacheCoherenceTests {
 
         // Explicitly assert internal cache was cleared.
         #expect(semanticString._storage.cachedString == nil)
-        #expect(semanticString._storage.cachedComponents == nil)
 
         let postString = semanticString.string
         let postComponents = semanticString.components
@@ -675,7 +671,6 @@ struct CacheCoherenceTests {
 
         // Explicitly assert internal cache was cleared.
         #expect(semanticString._storage.cachedString == nil)
-        #expect(semanticString._storage.cachedComponents == nil)
 
         let postString = semanticString.string
         let postComponents = semanticString.components

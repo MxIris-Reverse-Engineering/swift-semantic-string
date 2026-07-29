@@ -71,18 +71,19 @@ extension AtomicSemanticComponent {
 ///
 /// Conforming is a promise, and it buys the zero-allocation streaming path:
 /// `SemanticString.append(_:)` has a statically-resolved overload for plain
-/// leaves that stores `string` and `type` straight into the flat
-/// representation, with no dynamic cast and no intermediate array. All of the
-/// library's own leaves (`Keyword`, `Space`, `Indent`, `TypeName`, …) conform.
+/// leaves that stores `string` and `type` straight into the atom array, with
+/// no dynamic cast and no intermediate array. All of the library's own leaves
+/// (`Keyword`, `Space`, `Indent`, `TypeName`, …) conform.
 ///
 /// **Do not conform if you override `buildComponents()`.** The fast path does
 /// not call it, so an override would be silently ignored for values appended
 /// through `append` / `appending` / `+` / `+=` while still being honoured when
 /// the same value goes through a `@SemanticStringBuilder` — the same component
-/// rendering two different ways depending on how it was assembled. Leaves that
-/// override `buildComponents()` conform to `AtomicSemanticComponent` only and
-/// take the correct, slightly slower path. `AtomicComponent` is one such leaf:
-/// it overrides `buildComponents()` to carry `identifier` through.
+/// producing different *content* depending on how it was assembled. Leaves
+/// that override `buildComponents()` conform to `AtomicSemanticComponent`
+/// only and take the correct, slightly slower path — which still records one
+/// element however many atoms the override produces. `AtomicComponent` is one
+/// such leaf: it overrides `buildComponents()` to carry `identifier` through.
 public protocol PlainAtomicSemanticComponent: AtomicSemanticComponent {}
 
 // MARK: - Convenience Extensions

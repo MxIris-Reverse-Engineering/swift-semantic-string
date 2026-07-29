@@ -88,15 +88,13 @@ public struct DeclarationBlock: SemanticStringComponent {
         result.append(AtomicComponent(string: "{", type: .standard))
 
         // Body - components handle their own structure (NestedDeclaration adds BreakLine, MemberList handles its own)
-        var bodyComponents: [AtomicComponent] = []
-        bodyComponents.reserveCapacity(body.count)
-        body.appendAllComponents(into: &bodyComponents)
-        result.append(contentsOf: bodyComponents)
+        let bodyStartCount = result.count
+        body.appendAllComponents(into: &result)
 
         // Closing brace with indent (only if body had content)
-        if !bodyComponents.isEmpty {
+        if result.count > bodyStartCount {
             // Add BreakLine before closing brace if body doesn't end with newline
-            if let last = bodyComponents.last, !last.string.hasSuffix("\n") {
+            if let last = result.last, !last.string.hasSuffix("\n") {
                 result.append(CommonAtomicComponents.breakLine)
             }
             if level > 0 && !indentString.isEmpty {
@@ -267,15 +265,12 @@ public struct BlockList: SemanticStringComponent {
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
         var result: [AtomicComponent] = []
-        // Rough pattern per item: leading break + item (+ optional separator break) + trailing break.
-        result.reserveCapacity(items.count * 2 + 1)
-        // One scratch buffer reused across items: each item's flattening has to
-        // be inspected for emptiness before its leading break is emitted.
-        var itemComponents: [AtomicComponent] = []
+        // Pattern per item: leading break + item (+ optional separator break) + trailing break.
+        result.reserveCapacity(items.totalComponentCount + items.count * 2 + 1)
         var hasContent = false
         for index in items.indices {
-            itemComponents.removeAll(keepingCapacity: true)
-            items.appendComponents(ofElementAt: index, into: &itemComponents)
+            // Zero-copy slice; empty items are skipped entirely.
+            let itemComponents = items.atoms(ofElementAt: index)
             guard !itemComponents.isEmpty else { continue }
             if _separatedByEmptyLine && hasContent {
                 result.append(CommonAtomicComponents.breakLine)
@@ -375,13 +370,12 @@ public struct MemberList: SemanticStringComponent {
         let indentComponent: AtomicComponent? = indentString.isEmpty ? nil : AtomicComponent(string: indentString, type: .standard)
 
         var result: [AtomicComponent] = []
-        // Rough pattern per item: break + indent + item, plus one trailing break.
-        result.reserveCapacity(items.count * 3 + 1)
-        var itemComponents: [AtomicComponent] = []
+        // Pattern per item: break + indent + item, plus one trailing break.
+        result.reserveCapacity(items.totalComponentCount + items.count * 2 + 1)
         var hasContent = false
         for index in items.indices {
-            itemComponents.removeAll(keepingCapacity: true)
-            items.appendComponents(ofElementAt: index, into: &itemComponents)
+            // Zero-copy slice; empty items are skipped entirely.
+            let itemComponents = items.atoms(ofElementAt: index)
             guard !itemComponents.isEmpty else { continue }
             result.append(CommonAtomicComponents.breakLine)
             if let indentComponent {
@@ -484,14 +478,13 @@ public struct Rows: SemanticStringComponent {
         let indentComponent: AtomicComponent? = indentString.isEmpty ? nil : AtomicComponent(string: indentString, type: .standard)
 
         var result: [AtomicComponent] = []
-        // Rough pattern per non-first sub-row: break + indent + item; first sub-row
+        // Pattern per non-first sub-row: break + indent + item; first sub-row
         // is opened by the outer container's leading separator.
-        result.reserveCapacity(items.count * 3)
-        var itemComponents: [AtomicComponent] = []
+        result.reserveCapacity(items.totalComponentCount + items.count * 2)
         var hasContent = false
         for index in items.indices {
-            itemComponents.removeAll(keepingCapacity: true)
-            items.appendComponents(ofElementAt: index, into: &itemComponents)
+            // Zero-copy slice; empty sub-rows are skipped entirely.
+            let itemComponents = items.atoms(ofElementAt: index)
             guard !itemComponents.isEmpty else { continue }
             if hasContent {
                 result.append(CommonAtomicComponents.breakLine)

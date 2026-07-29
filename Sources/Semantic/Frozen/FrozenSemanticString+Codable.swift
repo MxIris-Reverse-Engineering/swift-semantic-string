@@ -38,7 +38,12 @@ extension FrozenSemanticString: Codable {
         // report `count > 0` and `isEmpty == false` while rendering nothing,
         // and converting it to a `SemanticString` would drop the span, so the
         // round trip would not be idempotent.
-        var coveredUTF8ByteCount = 0
+        //
+        // The accumulator is 64-bit on purpose: on 32-bit targets (watchOS
+        // devices) ~33k full-length spans would overflow an `Int` and trap
+        // before this validator gets a chance to throw — and a validator for
+        // untrusted bytes must never take the process down.
+        var coveredUTF8ByteCount: UInt64 = 0
         for (spanIndex, length) in spanLengths.enumerated() {
             guard length > 0 else {
                 throw DecodingError.dataCorrupted(.init(
@@ -46,17 +51,20 @@ extension FrozenSemanticString: Codable {
                     debugDescription: "Span \(spanIndex) has zero length; spans must cover at least one byte"
                 ))
             }
-            coveredUTF8ByteCount += Int(length)
+            coveredUTF8ByteCount += UInt64(length)
         }
-        guard coveredUTF8ByteCount == text.utf8.count else {
+        guard coveredUTF8ByteCount == UInt64(text.utf8.count) else {
             throw DecodingError.dataCorrupted(.init(
                 codingPath: decoder.codingPath,
                 debugDescription: "Span lengths cover \(coveredUTF8ByteCount) bytes but text has \(text.utf8.count)"
             ))
         }
 
+        // `Int(exactly:)` instead of `Int(_:)`: on 32-bit targets the plain
+        // conversion traps for indices above `Int32.max`, turning a malformed
+        // payload into a crash instead of a `DecodingError`.
         for identifierIndex in spanIdentifierIndices where identifierIndex != 0 {
-            guard Int(identifierIndex) <= identifierTable.count else {
+            guard let tableIndex = Int(exactly: identifierIndex), tableIndex <= identifierTable.count else {
                 throw DecodingError.dataCorrupted(.init(
                     codingPath: decoder.codingPath,
                     debugDescription: "Identifier index \(identifierIndex) exceeds table of \(identifierTable.count)"

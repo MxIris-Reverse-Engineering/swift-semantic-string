@@ -4,15 +4,13 @@ extension SemanticString {
     /// Returns the immutable, memory-compact snapshot of this string.
     /// See `FrozenSemanticString`.
     ///
-    /// Never inflates the value it is called on. Reading `components` and
-    /// `string` would publish the flattened array and the full text into
-    /// storage this value may be *sharing*, so a call whose entire purpose is
-    /// to reduce footprint would first raise it — permanently, for every value
-    /// holding the same storage. Both are read cache-if-present and otherwise
-    /// computed locally.
+    /// Never inflates the value it is called on, or any value sharing its
+    /// storage: `components` is the storage itself (no cache to fill), and
+    /// the text reuses the string cache only when a previous render already
+    /// paid for it — otherwise it is computed locally and not published.
     @inlinable
     public func frozen() -> FrozenSemanticString {
-        let atomicComponents = componentsWithoutPublishing()
+        let atomicComponents = _storage.atoms
 
         // Zero-length components contribute no bytes, so concatenating the
         // non-empty ones is by construction exactly `string` — free when the
@@ -26,9 +24,9 @@ extension SemanticString {
 
         for component in atomicComponents {
             let componentUTF8ByteCount = component.string.utf8.count
-            // Zero-length components carry no text and no renderable run;
-            // tree flattening already filters them, this covers flat-built
-            // strings holding manually constructed empty atomics.
+            // Storage never holds zero-length components; this guard is a
+            // defensive restatement of that invariant, because a zero-length
+            // span must never reach the frozen form.
             guard componentUTF8ByteCount > 0 else { continue }
 
             let typeCode = component.type.frozenTypeCode

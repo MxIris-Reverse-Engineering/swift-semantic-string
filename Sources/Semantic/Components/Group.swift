@@ -52,12 +52,12 @@ public struct Group: SemanticStringComponent {
         if let sep = separator {
             let sepComponents = sep.buildComponents()
             var result: [AtomicComponent] = []
-            result.reserveCapacity(items.count)
-            var itemComponents: [AtomicComponent] = []
+            result.reserveCapacity(items.totalComponentCount + sepComponents.count * max(items.count - 1, 0))
             var needsSeparator = false
             for index in items.indices {
-                itemComponents.removeAll(keepingCapacity: true)
-                items.appendComponents(ofElementAt: index, into: &itemComponents)
+                // Zero-copy slice of the element's components; empty items
+                // are skipped without emitting a separator around nothing.
+                let itemComponents = items.atoms(ofElementAt: index)
                 guard !itemComponents.isEmpty else { continue }
                 if needsSeparator {
                     result.append(contentsOf: sepComponents)
@@ -69,7 +69,7 @@ public struct Group: SemanticStringComponent {
         }
 
         var result: [AtomicComponent] = []
-        result.reserveCapacity(items.count)
+        result.reserveCapacity(items.totalComponentCount)
         items.appendAllComponents(into: &result)
         return result
     }

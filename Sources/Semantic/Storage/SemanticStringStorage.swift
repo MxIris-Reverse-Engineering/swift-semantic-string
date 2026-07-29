@@ -1,153 +1,176 @@
 extension SemanticString {
     /// Internal storage class for copy-on-write semantics.
     ///
-    /// Storage is two-state. Exactly one of the two arrays is populated at any
-    /// time; the other is empty:
+    /// Storage is a single flat representation:
     ///
-    /// - **Flat** (`isFlat == true`, contents in `flatComponents`): a typed
-    ///   array of atomic components with no existential boxing. This is the
-    ///   representation for streamed content (`append(_:type:)` /
-    ///   `write(_:)`), for strings built directly from `[AtomicComponent]`
-    ///   (decoding, transformation), and for finalized strings after
-    ///   `compact()`. An `AtomicComponent` is 40 bytes — larger than the
-    ///   24-byte inline buffer of an existential container — so storing it as
-    ///   `any SemanticStringComponent` costs a 40-byte container *plus* a
-    ///   64-byte heap box per token; the typed array costs 40 bytes total.
-    /// - **Tree** (`isFlat == false`, contents in `treeElements`): the
-    ///   construction-time form that preserves element boundaries. Composite
-    ///   components (`DeclarationBlock`, `MemberList`, `Joined`, …) must stay
-    ///   whole here because element granularity is semantic: containers like
-    ///   `MemberList` treat each element as one row.
+    /// - `atoms` — every atomic component, in order, with **no existential
+    ///   boxing**. An `AtomicComponent` is 40 bytes, larger than the 24-byte
+    ///   inline buffer of an existential container, so storing it as
+    ///   `any SemanticStringComponent` would cost a 40-byte container *plus* a
+    ///   64-byte heap box per token. The typed array costs 40 bytes total.
+    /// - `elementEndOffsets` — element boundaries, as end offsets into
+    ///   `atoms`. Element granularity is semantic (containers like
+    ///   `MemberList` treat one element as one row), so it is recorded
+    ///   explicitly instead of being implied by a boxed element tree.
+    ///   Composite components are flattened **eagerly** on append; their
+    ///   structure is never retained, because `buildComponents()` takes no
+    ///   context and the flattening can only ever be done once.
     ///
-    /// The invariant that keeps both forms observably identical to the
-    /// original single-array storage: the flat form only ever holds content
-    /// the old storage would have kept as individually boxed
-    /// `AtomicComponent` elements, so the element view has the same per-atom
-    /// granularity in both representations. Composites never enter the flat
-    /// form; appending one to a flat string first converts the existing atoms
-    /// into tree elements (`convertToTree`).
+    /// `elementEndOffsets == nil` means the boundaries are 1:1 — every atom is
+    /// its own element. This is the streaming representation:
+    /// `append(_:type:)` / `write(_:)` never allocate a boundary table, and a
+    /// string that only ever receives streamed appends carries zero overhead
+    /// beyond the atoms themselves. The table is materialized on the first
+    /// append whose element is not exactly one non-empty atom, at 8 bytes per
+    /// element.
     ///
-    /// The second invariant, which lets `components` hand out
-    /// `flatComponents` directly instead of re-filtering it on every read:
-    /// **`flatComponents` never contains a zero-length component.** Tree
-    /// flattening drops those (`AtomicComponent.buildComponents()` returns
-    /// `[]` for an empty string), so every entry point into the flat form has
-    /// to drop them as well or the two representations would disagree on
-    /// component counts, equality, and container layout. The entry points are
-    /// `appendAtomicComponent(_:)`, the `[AtomicComponent]` initializers, and
-    /// `compact()` — which is fed already-filtered flattening output.
+    /// When the table is materialized, element `i` covers
+    /// `atoms[start ..< elementEndOffsets[i]]` with
+    /// `start = i == 0 ? 0 : elementEndOffsets[i - 1]`. Offsets are
+    /// monotonically non-decreasing and the last one equals `atoms.count`.
+    /// A **zero-length element** (`elementEndOffsets[i] ==
+    /// elementEndOffsets[i - 1]`) records an appended component that
+    /// flattened to nothing — `EmptyComponent`, a `nil` optional, an empty
+    /// composite. It contributes no atoms and no text, but it *does* count as
+    /// an element, so `isEmpty` and per-element containers observe it exactly
+    /// as the historical element tree did.
+    ///
+    /// **`atoms` never contains a zero-length component**, on any construction
+    /// path. Tree flattening historically dropped empty atomics
+    /// (`AtomicComponent.buildComponents()` returns `[]` for an empty string);
+    /// the flat storage upholds the same rule at every write entry point, so
+    /// `components` can hand out `atoms` verbatim with no filtering read and
+    /// the same content always compares, hashes, counts, and encodes the same
+    /// way regardless of how it was built.
+    ///
+    /// The only mutable-under-sharing state is `cachedString`, guarded by
+    /// `CacheLockStripes`. Everything else is only mutated on
+    /// uniquely-referenced storage (`makeUniqueForMutation()`), which needs no
+    /// lock.
     @usableFromInline
     final class Storage: @unchecked Sendable {
-        /// Discriminates which of the two content arrays is authoritative.
+        /// Every atomic component, flattened, in order. Never contains a
+        /// zero-length component.
         @usableFromInline
-        var isFlat: Bool
+        var atoms: [AtomicComponent]
 
-        /// Authoritative contents when `isFlat == true`; empty otherwise.
+        /// Element end offsets into `atoms`; `nil` means every atom is its
+        /// own element.
         @usableFromInline
-        var flatComponents: [AtomicComponent]
+        var elementEndOffsets: [Int]?
 
-        /// Authoritative contents when `isFlat == false`; empty otherwise.
-        @usableFromInline
-        var treeElements: [any SemanticStringComponent]
-
-        /// Flattened-components cache; only meaningful in the tree state
-        /// (the flat state's contents *are* the flattened components).
-        @usableFromInline
-        var cachedComponents: [AtomicComponent]?
-
+        /// Lazy concatenation cache. The single piece of state that may be
+        /// written while the storage is shared; every access goes through
+        /// `cacheLock`.
         @usableFromInline
         var cachedString: String?
 
         /// The stripe this instance's cache fills serialize on.
         ///
-        /// All mutations other than the cache fills happen on
-        /// uniquely-referenced storage (guarded by `makeUnique`) and need no
-        /// lock.
+        /// All mutations other than the cache fill happen on
+        /// uniquely-referenced storage (guarded by `makeUniqueForMutation`)
+        /// and need no lock.
         @usableFromInline
         var cacheLock: UnsafeMutablePointer<CacheLockStripes.Primitive> {
             CacheLockStripes.stripe(forAddress: UInt(bitPattern: Unmanaged.passUnretained(self).toOpaque()))
         }
 
         @inlinable
-        init(flatComponents: [AtomicComponent]) {
-            self.isFlat = true
-            self.flatComponents = flatComponents
-            self.treeElements = []
+        init(atoms: [AtomicComponent], elementEndOffsets: [Int]?) {
+            self.atoms = atoms
+            self.elementEndOffsets = elementEndOffsets
         }
 
         @inlinable
-        init(treeElements: [any SemanticStringComponent]) {
-            self.isFlat = false
-            self.flatComponents = []
-            self.treeElements = treeElements
+        convenience init() {
+            self.init(atoms: [], elementEndOffsets: nil)
         }
 
-        /// Copies contents *and* the caches. Deliberately not `@inlinable`:
-        /// the body touches the cache under `other`'s stripe lock, and a
-        /// cross-module inlined body would have to expose the locking
-        /// primitives too.
+        /// Copies contents only, leaving the string cache empty.
         ///
-        /// Only for callers that go on to *read* the caches. Every mutation
-        /// path wants `init(copyingContentsOf:)` instead, which skips the lock
-        /// and the two cache copies the caller would throw away.
-        @usableFromInline
-        init(copying other: Storage) {
-            // `isFlat` and the two content arrays are only ever mutated on
-            // uniquely-referenced storage, and `other` is shared by definition
-            // here, so they need no lock. The cache fields are the exception:
-            // a concurrent reader may be filling them right now.
-            self.isFlat = other.isFlat
-            self.flatComponents = other.flatComponents
-            self.treeElements = other.treeElements
-            let stripe = other.cacheLock
-            CacheLockStripes.lock(stripe)
-            self.cachedComponents = other.cachedComponents
-            self.cachedString = other.cachedString
-            CacheLockStripes.unlock(stripe)
-        }
-
-        /// Copies contents only, leaving the caches empty.
-        ///
-        /// This is the copy-on-write path for *mutations*, which is every
-        /// `append` and therefore every `appending` / `+` / `wrapped` /
-        /// `parenthesized`. Those callers invalidate the cache as their next
-        /// statement, so copying it under a lock is pure waste: two array
-        /// retains and a lock round trip per call, on a path that used to be
-        /// neither. Being `@inlinable` matters here for the same reason —
-        /// it touches no locking primitive, so it can cross module boundaries.
+        /// This is the copy-on-write path for mutations — every `append`, and
+        /// therefore every `appending` / `+` / `wrapped` / `parenthesized`.
+        /// Mutations invalidate the cache as their next effect, so copying it
+        /// (which would require taking `other`'s stripe lock) would be pure
+        /// waste. Being `@inlinable` is safe precisely because the body
+        /// touches no locking primitive.
         @inlinable
         init(copyingContentsOf other: Storage) {
-            self.isFlat = other.isFlat
-            self.flatComponents = other.flatComponents
-            self.treeElements = other.treeElements
+            self.atoms = other.atoms
+            self.elementEndOffsets = other.elementEndOffsets
         }
 
-        /// Rehouses flat atoms as boxed tree elements so a composite can be
-        /// appended. Granularity is unchanged: the old storage kept streamed
-        /// atoms as individually boxed elements anyway. Must only be called
-        /// on uniquely-referenced storage.
+        /// The number of elements. `O(1)` in both representations.
+        @inlinable
+        var elementCount: Int {
+            elementEndOffsets?.count ?? atoms.count
+        }
+
+        /// Expands the implicit 1:1 boundary table so a non-1:1 element can
+        /// be recorded. Must only be called on uniquely-referenced storage.
         @usableFromInline
-        func convertToTree() {
-            guard isFlat else { return }
-            treeElements = flatComponents.map { $0 as any SemanticStringComponent }
-            flatComponents = []
-            isFlat = false
+        func materializeElementEndOffsets() {
+            guard elementEndOffsets == nil else { return }
+            let atomCount = atoms.count
+            if atomCount == 0 {
+                elementEndOffsets = []
+            } else {
+                elementEndOffsets = Array(1 ... atomCount)
+            }
         }
 
-        /// Reads the flattened-components cache without publishing anything.
-        /// Used by the paths that must not inflate a storage they may be
-        /// sharing (`compact()`, `frozen()`).
+        /// Records that the atoms appended since the previous element
+        /// boundary form one element. No-op while the table is `nil` and the
+        /// element is exactly one atom — that is what 1:1 means.
+        ///
+        /// Must only be called on uniquely-referenced storage. The
+        /// materialization below runs *after* the atoms were appended, so it
+        /// must exclude them from the 1:1 prefix — hence the explicit count.
         @usableFromInline
-        func cachedComponentsIfPresent() -> [AtomicComponent]? {
-            let stripe = cacheLock
-            CacheLockStripes.lock(stripe)
-            let cached = cachedComponents
-            CacheLockStripes.unlock(stripe)
-            return cached
+        func closeElement(appendedAtomCount: Int) {
+            if elementEndOffsets == nil {
+                if appendedAtomCount == 1 {
+                    return
+                }
+                let previousAtomCount = atoms.count - appendedAtomCount
+                if previousAtomCount == 0 {
+                    elementEndOffsets = []
+                } else {
+                    elementEndOffsets = Array(1 ... previousAtomCount)
+                }
+            }
+            elementEndOffsets?.append(atoms.count)
         }
 
-        /// Reads the string cache without publishing anything. See
-        /// `cachedComponentsIfPresent()`.
+        /// Appends another storage's contents, element boundaries included.
+        /// Must only be called on uniquely-referenced storage; `other` is
+        /// only read.
+        @usableFromInline
+        func appendContents(of other: Storage) {
+            if elementEndOffsets == nil, other.elementEndOffsets == nil {
+                // Both 1:1 — the concatenation stays 1:1.
+                atoms.append(contentsOf: other.atoms)
+                return
+            }
+            materializeElementEndOffsets()
+            let baseAtomCount = atoms.count
+            atoms.append(contentsOf: other.atoms)
+            if let otherEndOffsets = other.elementEndOffsets {
+                for endOffset in otherEndOffsets {
+                    elementEndOffsets?.append(baseAtomCount + endOffset)
+                }
+            } else {
+                var endOffset = baseAtomCount + 1
+                let finalAtomCount = atoms.count
+                while endOffset <= finalAtomCount {
+                    elementEndOffsets?.append(endOffset)
+                    endOffset += 1
+                }
+            }
+        }
+
+        /// Reads the string cache under its lock. Shared storages may be
+        /// filling it concurrently.
         @usableFromInline
         func cachedStringIfPresent() -> String? {
             let stripe = cacheLock

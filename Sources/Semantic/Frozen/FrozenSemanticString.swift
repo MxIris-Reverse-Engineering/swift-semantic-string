@@ -58,10 +58,18 @@ public struct FrozenSemanticString: Sendable {
     public let identifierTable: [String]
 
     /// Creates a frozen string from raw parts. The caller is responsible for
-    /// the invariants (`spans` lengths partition `text`'s UTF-8 view, every
-    /// `typeCode` is valid, every non-zero `identifierIndex` is in range, no
-    /// span has zero length); `SemanticString.frozen()` and `Codable` decoding
-    /// are the validated construction paths.
+    /// the invariants: `spans` lengths partition `text`'s UTF-8 view exactly,
+    /// no span has zero length, and boundaries fall on Unicode scalars.
+    /// Violating *those* invariants traps in `enumerateSpans(_:)` — a
+    /// deliberate loud failure, because silently truncating a mis-sliced
+    /// value would be far harder to debug.
+    ///
+    /// Two fields degrade instead of trapping, on every construction path:
+    /// an out-of-range `identifierIndex` resolves to `nil`, and an unknown
+    /// `typeCode` resolves to `.other`. The latter is deliberate forward
+    /// compatibility — a payload from a *newer* encoder must stay readable —
+    /// so `Codable` decoding validates the length/coverage/alignment/index
+    /// invariants but does **not** reject unknown type codes.
     @inlinable
     public init(text: String, spans: [Span], identifierTable: [String]) {
         self.text = text
@@ -91,13 +99,19 @@ extension FrozenSemanticString {
     ///
     /// Out-of-range indices resolve to `nil` rather than trapping, so a
     /// payload that reached the unchecked initializer degrades to "no
-    /// identifier" instead of taking the process down.
+    /// identifier" instead of taking the process down. `Int(exactly:)`
+    /// keeps that promise on 32-bit targets (watchOS devices), where a
+    /// plain `Int(identifierIndex)` conversion would itself trap for
+    /// indices above `Int32.max`.
     @inlinable
     public func identifier(at identifierIndex: UInt32) -> String? {
-        guard identifierIndex != 0, Int(identifierIndex) <= identifierTable.count else {
+        guard identifierIndex != 0,
+              let tableIndex = Int(exactly: identifierIndex),
+              tableIndex <= identifierTable.count
+        else {
             return nil
         }
-        return identifierTable[Int(identifierIndex) - 1]
+        return identifierTable[tableIndex - 1]
     }
 
     /// Walks every span in order, yielding its text slice, resolved semantic
@@ -157,9 +171,15 @@ extension FrozenSemanticString: Hashable {
         guard lhs.text == rhs.text, lhs.spans.count == rhs.spans.count else {
             return false
         }
-        // Identical tables mean the indices are directly comparable.
-        if lhs.identifierTable == rhs.identifierTable {
-            return lhs.spans == rhs.spans
+        // Identical tables with identical spans are certainly equal. This is
+        // a sufficient condition only: a table can carry duplicate entries
+        // (decoding preserves them), so two values over the *same* table may
+        // reference the same identifier through different indices. Returning
+        // `lhs.spans == rhs.spans` as the final answer here would deny that
+        // pair while the resolving loop below grants it against a third
+        // value — breaking transitivity. Fall through instead.
+        if lhs.identifierTable == rhs.identifierTable, lhs.spans == rhs.spans {
+            return true
         }
         for (leftSpan, rightSpan) in zip(lhs.spans, rhs.spans) {
             guard leftSpan.length == rightSpan.length,

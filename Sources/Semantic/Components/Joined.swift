@@ -153,38 +153,39 @@ public struct Joined: SemanticStringComponent {
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        let sepComponents = separator.buildComponents()
-
-        // First pass: assemble the separated body. Empty items are skipped
-        // without emitting a separator around nothing. One scratch buffer is
-        // reused across items rather than materializing an array per item.
-        var body: [AtomicComponent] = []
-        body.reserveCapacity(items.count)
-        var itemComponents: [AtomicComponent] = []
-        var hasContent = false
-        for index in items.indices {
-            itemComponents.removeAll(keepingCapacity: true)
-            items.appendComponents(ofElementAt: index, into: &itemComponents)
-            guard !itemComponents.isEmpty else { continue }
-            if hasContent {
-                body.append(contentsOf: sepComponents)
-            }
-            body.append(contentsOf: itemComponents)
-            hasContent = true
-        }
         // An all-empty Joined produces nothing at all — not even prefix/suffix.
+        var hasContent = false
+        for index in items.indices where !items.atoms(ofElementAt: index).isEmpty {
+            hasContent = true
+            break
+        }
         guard hasContent else { return [] }
 
+        let sepComponents = separator.buildComponents()
         let prefixComponents = prefix?.buildComponents() ?? []
         let suffixComponents = suffix?.buildComponents() ?? []
-        if prefixComponents.isEmpty, suffixComponents.isEmpty {
-            return body
-        }
 
+        // Single pass over zero-copy element slices, assembled into one
+        // reserved allocation. Empty items are skipped without emitting a
+        // separator around nothing.
         var result: [AtomicComponent] = []
-        result.reserveCapacity(prefixComponents.count + body.count + suffixComponents.count)
+        result.reserveCapacity(
+            prefixComponents.count
+                + items.totalComponentCount
+                + sepComponents.count * max(items.count - 1, 0)
+                + suffixComponents.count
+        )
         result.append(contentsOf: prefixComponents)
-        result.append(contentsOf: body)
+        var needsSeparator = false
+        for index in items.indices {
+            let itemComponents = items.atoms(ofElementAt: index)
+            guard !itemComponents.isEmpty else { continue }
+            if needsSeparator {
+                result.append(contentsOf: sepComponents)
+            }
+            result.append(contentsOf: itemComponents)
+            needsSeparator = true
+        }
         result.append(contentsOf: suffixComponents)
         return result
     }

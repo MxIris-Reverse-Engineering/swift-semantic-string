@@ -7,15 +7,16 @@ import Testing
 /// `SemanticString` is a `Sendable` value type over a `@unchecked Sendable`
 /// storage class, which puts three promises on the implementation:
 ///
-/// 1. Reading a value shared across threads is safe even when its caches are
-///    cold, because the lazy `cachedComponents` / `cachedString` fills are
-///    serialized by `Storage`'s striped locks.
+/// 1. Reading a value shared across threads is safe even when its string
+///    cache is cold, because the lazy `cachedString` fill — the storage's
+///    only shared-mutable state — is serialized by the striped locks.
+///    `components` reads the storage array directly and needs no lock.
 /// 2. Copying and mutating a shared value is safe and isolated, because
-///    `makeUnique()` copies the storage first — including its cache, which is
-///    read under the same lock a concurrent filler holds.
-/// 3. No lock is ever held while calling back into component code, so
-///    flattening a string whose elements are themselves strings cannot
-///    deadlock — not even when the two storages hash to the same stripe.
+///    `makeUniqueForMutation()` copies the contents first; the copy never
+///    touches the cache, so it takes no lock.
+/// 3. No lock is ever held while concatenating, so a cold `string` read on
+///    two storages sharing a stripe cannot deadlock or serialize their
+///    concatenation work.
 ///
 /// **Most of these tests pass trivially in a normal run.** What they guard
 /// against is data races and lock-ordering bugs, which surface only under
@@ -189,9 +190,11 @@ struct ConcurrencyTests {
 
     @Test("Concurrent copy-on-write mutations of a shared value are isolated")
     func concurrentCopyOnWriteMutationsAreIsolated() async {
-        // The copy path (`makeUnique()` → `Storage(copying:)`) reads the shared
-        // cache while other tasks may be filling it. Each task must still see
-        // only its own suffix, and the shared value must come out untouched.
+        // The copy path (`makeUniqueForMutation()` →
+        // `Storage(copyingContentsOf:)`) copies the contents while other
+        // tasks may be filling the shared string cache. Each task must still
+        // see only its own suffix, and the shared value must come out
+        // untouched.
         let (expectedComponents, expectedString) = expectedComponentsAndString()
 
         for _ in 0 ..< Self.roundCount {
@@ -264,7 +267,7 @@ struct ConcurrencyTests {
         // that assumption.
         for _ in 0 ..< Self.roundCount {
             let shared = streamedString()
-            #expect(shared._storage.isFlat)
+            #expect(shared._storage.elementEndOffsets == nil)
             let reference = streamedString()
             let expectedComponents = reference.components
             let expectedString = reference.string

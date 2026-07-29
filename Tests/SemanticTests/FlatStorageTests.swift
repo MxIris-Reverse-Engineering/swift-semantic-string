@@ -2,136 +2,192 @@ import Foundation
 import Testing
 @testable import Semantic
 
-/// Tests for the two-state (`tree` / `flat`) storage introduced to eliminate
-/// per-token existential boxing, and for the `compact()` finalization API.
+/// Tests for the flat storage: one typed atom array plus an explicit element
+/// boundary table (`nil` = every atom is its own element), with composites
+/// flattened eagerly on append.
 ///
 /// The contract under test: every observable behavior — `components`,
 /// `string`, equality, hashing, `Codable` output, element granularity for
-/// container components — is identical between the two representations, and
-/// state transitions happen exactly where documented.
-@Suite("Two-State Storage")
-struct TwoStateStorageTests {
-    // MARK: - State Transitions
+/// container components — matches the historical element tree, and the
+/// boundary table is only materialized when an element is not exactly one
+/// atom.
+@Suite("Flat Storage")
+struct FlatStorageTests {
+    // MARK: - Representation
 
-    @Test("Empty init starts flat")
-    func emptyInitStartsFlat() {
+    @Test("Empty init holds nothing")
+    func emptyInitHoldsNothing() {
         let semanticString = SemanticString()
-        #expect(semanticString._storage.isFlat)
+        #expect(semanticString._storage.atoms.isEmpty)
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.isEmpty)
     }
 
-    @Test("Streamed atomic appends stay flat and never box")
-    func streamedAppendsStayFlat() {
+    @Test("Streamed atomic appends never materialize the boundary table")
+    func streamedAppendsStayOneToOne() {
         var semanticString = SemanticString()
         semanticString.append("public", type: .keyword)
         semanticString.append(" ", type: .standard)
         semanticString.append("struct", type: .keyword)
-        #expect(semanticString._storage.isFlat)
-        #expect(semanticString._storage.flatComponents.count == 3)
-        #expect(semanticString._storage.treeElements.isEmpty)
+        #expect(semanticString._storage.atoms.count == 3)
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.string == "public struct")
     }
 
-    @Test("String literal init is flat")
-    func stringLiteralInitIsFlat() {
+    @Test("String literal init is one atom, no boundary table")
+    func stringLiteralInitIsOneToOne() {
         let semanticString: SemanticString = "Hello"
-        #expect(semanticString._storage.isFlat)
+        #expect(semanticString._storage.atoms.count == 1)
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.string == "Hello")
     }
 
-    @Test("Init from [AtomicComponent] is flat")
-    func atomicComponentArrayInitIsFlat() {
+    @Test("Init from [AtomicComponent] is one-to-one")
+    func atomicComponentArrayInitIsOneToOne() {
         let semanticString = SemanticString(components: [
             AtomicComponent(string: "let", type: .keyword),
             AtomicComponent(string: " value", type: .variable),
         ])
-        #expect(semanticString._storage.isFlat)
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.components.count == 2)
     }
 
-    @Test("Builder init is a tree")
-    func builderInitIsTree() {
+    @Test("Builder init of plain leaves is one-to-one, exactly like streaming")
+    func builderInitOfLeavesIsOneToOne() {
         let semanticString = SemanticString {
             Keyword("public")
             Space()
             Keyword("struct")
         }
-        #expect(!semanticString._storage.isFlat)
+        #expect(semanticString._storage.atoms.count == 3)
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.string == "public struct")
     }
 
-    @Test("Appending a composite to a flat string converts it to a tree")
-    func compositeAppendConvertsToTree() {
+    @Test("Appending a composite records one multi-atom element")
+    func compositeAppendRecordsOneElement() {
         var semanticString = SemanticString()
         semanticString.append("prefix", type: .standard)
-        #expect(semanticString._storage.isFlat)
+        #expect(semanticString._storage.elementEndOffsets == nil)
 
         semanticString.append(Joined(separator: ", ") {
             Keyword("a")
             Keyword("b")
         })
-        #expect(!semanticString._storage.isFlat)
-        #expect(semanticString._storage.flatComponents.isEmpty)
+        // "prefix" then one element covering ["a", ", ", "b"].
+        #expect(semanticString._storage.elementEndOffsets == [1, 4])
+        #expect(semanticString._storage.elementCount == 2)
         #expect(semanticString.string == "prefixa, b")
     }
 
-    @Test("Appending an AtomicComponent through the generic overload stays flat")
-    func genericAtomicAppendStaysFlat() {
+    @Test("A composite that flattens to nothing records a zero-length element")
+    func emptyCompositeRecordsZeroLengthElement() {
+        var semanticString = SemanticString()
+        semanticString.append("x", type: .keyword)
+        semanticString.append(EmptyComponent())
+        #expect(semanticString._storage.atoms.count == 1)
+        #expect(semanticString._storage.elementEndOffsets == [1, 1])
+        #expect(semanticString.isEmpty == false)
+        #expect(semanticString.string == "x")
+
+        // Streaming afterwards appends one-atom elements to the table.
+        semanticString.append("y", type: .keyword)
+        #expect(semanticString._storage.elementEndOffsets == [1, 1, 2])
+        #expect(semanticString.string == "xy")
+    }
+
+    @Test("Appending a nil optional component records a zero-length element")
+    func nilOptionalAppendRecordsZeroLengthElement() {
+        var semanticString = SemanticString()
+        semanticString.append("a", type: .keyword)
+        semanticString.append(nil as Keyword?)
+        semanticString.append("b", type: .keyword)
+        #expect(semanticString._storage.atoms.count == 2)
+        #expect(semanticString._storage.elementCount == 3)
+        #expect(semanticString.string == "ab")
+    }
+
+    @Test("Appending an AtomicComponent through the generic overload stays one-to-one")
+    func genericAtomicAppendStaysOneToOne() {
         var semanticString = SemanticString()
         semanticString.append(AtomicComponent(string: "x", type: .variable))
-        #expect(semanticString._storage.isFlat)
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.components == [AtomicComponent(string: "x", type: .variable)])
     }
 
-    @Test("Appending a first-class leaf component keeps the flat representation")
-    func genericLeafComponentAppendStaysFlat() {
+    @Test("Appending a first-class leaf component stays one-to-one")
+    func genericLeafComponentAppendStaysOneToOne() {
         // `Keyword` and friends flatten to exactly one `AtomicComponent`, so
-        // the dedicated `AtomicSemanticComponent` overload takes them down the
-        // flat path — no existential boxing, and no conversion of the atoms
-        // accumulated so far.
+        // appending one is indistinguishable from a streamed append: no
+        // boundary table, no boxing, no intermediate structure retained.
         var semanticString = SemanticString()
         semanticString.append("prefix", type: .standard)
         semanticString.append(Keyword("func"))
-        #expect(semanticString._storage.isFlat)
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.string == "prefixfunc")
         #expect(semanticString.components.last?.type == .keyword)
     }
 
+    @Test("A custom leaf flattening to several atoms stays one element")
+    func multiAtomLeafStaysOneElement() {
+        struct TwoAtomLeaf: AtomicSemanticComponent {
+            var string: String { "@name" }
+            var type: SemanticType { .standard }
+            func buildComponents() -> [AtomicComponent] {
+                [
+                    AtomicComponent(string: "@", type: .keyword),
+                    AtomicComponent(string: "name", type: .member(.name)),
+                ]
+            }
+        }
+        var semanticString = SemanticString()
+        semanticString.append(TwoAtomLeaf())
+        #expect(semanticString._storage.atoms.count == 2)
+        #expect(semanticString._storage.elementEndOffsets == [2])
+        #expect(semanticString._storage.elementCount == 1)
+    }
+
     // MARK: - Append Matrix
 
-    private func flatString(_ text: String) -> SemanticString {
+    private func streamedString(_ text: String) -> SemanticString {
         var semanticString = SemanticString()
         semanticString.append(text, type: .standard)
         return semanticString
     }
 
-    private func treeString(_ text: String) -> SemanticString {
-        SemanticString {
+    private func boundedString(_ text: String) -> SemanticString {
+        // Give the string a materialized boundary table by appending a
+        // composite element.
+        var semanticString = SemanticString()
+        semanticString.append(Group {
             Keyword(text)
-        }
+        })
+        return semanticString
     }
 
-    @Test("Append matrix preserves component sequences across all state combinations")
+    @Test("Append matrix preserves component sequences across boundary-table combinations")
     func appendMatrix() {
         let combinations: [(SemanticString, SemanticString)] = [
-            (flatString("left"), flatString("right")),
-            (flatString("left"), treeString("right")),
-            (treeString("left"), flatString("right")),
-            (treeString("left"), treeString("right")),
+            (streamedString("left"), streamedString("right")),
+            (streamedString("left"), boundedString("right")),
+            (boundedString("left"), streamedString("right")),
+            (boundedString("left"), boundedString("right")),
         ]
         for (leftHandSide, rightHandSide) in combinations {
             let expectedComponents = leftHandSide.components + rightHandSide.components
+            let expectedElementCount = leftHandSide._storage.elementCount + rightHandSide._storage.elementCount
             var merged = leftHandSide
             merged.append(rightHandSide)
             #expect(merged.components == expectedComponents)
             #expect(merged.string == leftHandSide.string + rightHandSide.string)
+            #expect(merged._storage.elementCount == expectedElementCount)
         }
     }
 
     @Test("Non-mutating appending matches mutating append and leaves self untouched")
     func appendingMatchesAppend() {
-        let base = flatString("base")
-        let appended = base.appending(treeString("tail"))
+        let base = streamedString("base")
+        let appended = base.appending(boundedString("tail"))
         #expect(base.string == "base")
         #expect(appended.string == "basetail")
 
@@ -142,15 +198,14 @@ struct TwoStateStorageTests {
 
     // MARK: - Identifier Scopes
 
-    @Test("Identifier stamping works on the flat fast path")
-    func identifierStampingOnFlatPath() {
+    @Test("Identifier stamping works on streamed appends")
+    func identifierStampingOnStreamedAppends() {
         var semanticString = SemanticString()
         semanticString.pushIdentifierScope("$s7ModuleA4TypeV")
         semanticString.append("Type", type: .type(.struct, .name))
         semanticString.popIdentifierScope()
         semanticString.append(".", type: .standard)
 
-        #expect(semanticString._storage.isFlat)
         #expect(semanticString.components[0].identifier == "$s7ModuleA4TypeV")
         #expect(semanticString.components[1].identifier == nil)
     }
@@ -163,7 +218,7 @@ struct TwoStateStorageTests {
         #expect(result.components.last?.identifier == nil)
     }
 
-    // MARK: - Compaction
+    // MARK: - Container Granularity
 
     private func buildDeclarationBlock() -> SemanticString {
         SemanticString {
@@ -188,101 +243,9 @@ struct TwoStateStorageTests {
         }
     }
 
-    @Test("compact() preserves components, string, count, equality, and hash")
-    func compactPreservesObservableBehavior() {
-        let original = buildDeclarationBlock()
-        let expectedComponents = original.components
-        let expectedString = original.string
-
-        var compacted = original
-        compacted.compact()
-
-        #expect(compacted._storage.isFlat)
-        #expect(compacted.components == expectedComponents)
-        #expect(compacted.string == expectedString)
-        #expect(compacted.count == original.count)
-        #expect(compacted == original)
-        #expect(compacted.hashValue == original.hashValue)
-    }
-
-    @Test("compact() produces identical Codable output")
-    func compactPreservesCodableOutput() throws {
-        let original = buildDeclarationBlock()
-        let compacted = original.compacted()
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let originalData = try encoder.encode(original)
-        let compactedData = try encoder.encode(compacted)
-        #expect(originalData == compactedData)
-    }
-
-    @Test("compact() is idempotent and safe on empty strings")
-    func compactIdempotentAndEmptySafe() {
-        var empty = SemanticString()
-        empty.compact()
-        #expect(empty.isEmpty)
-        #expect(empty._storage.isFlat)
-
-        var compacted = buildDeclarationBlock()
-        compacted.compact()
-        let onceComponents = compacted.components
-        compacted.compact()
-        #expect(compacted.components == onceComponents)
-    }
-
-    @Test("compact() respects copy-on-write isolation")
-    func compactCopyOnWriteIsolation() {
-        let original = buildDeclarationBlock()
-        let copyBeforeCompaction = original
-        var compacted = original
-        compacted.compact()
-
-        // The copy taken before compaction keeps its tree storage.
-        #expect(!copyBeforeCompaction._storage.isFlat)
-        #expect(compacted._storage.isFlat)
-        #expect(copyBeforeCompaction == compacted)
-    }
-
-    @Test("compact() releases the element tree")
-    func compactReleasesTree() {
-        var compacted = buildDeclarationBlock()
-        compacted.compact()
-        #expect(compacted._storage.treeElements.isEmpty)
-        #expect(compacted._storage.cachedComponents == nil)
-        #expect(compacted._storage.flatComponents.count == compacted.components.count)
-    }
-
-    @Test("Appends still work after compact()")
-    func appendAfterCompact() {
-        var semanticString = buildDeclarationBlock()
-        let stringBeforeAppend = semanticString.string
-        semanticString.compact()
-
-        semanticString.append("\n", type: .standard)
-        #expect(semanticString._storage.isFlat)
-        #expect(semanticString.string == stringBeforeAppend + "\n")
-
-        semanticString.append(Joined(separator: " ") {
-            Keyword("extension")
-            Keyword("Foo")
-        })
-        #expect(!semanticString._storage.isFlat)
-        #expect(semanticString.string == stringBeforeAppend + "\nextension Foo")
-    }
-
-    @Test("Post-compaction elements view is per-atom")
-    func compactedElementsViewIsPerAtom() {
-        var compacted = buildDeclarationBlock()
-        compacted.compact()
-        #expect(compacted.elements.count == compacted.components.count)
-    }
-
-    // MARK: - Container Granularity (the regression this design must not cause)
-
-    @Test("MemberList keeps one row per member when members are flat strings")
-    func memberListGranularityWithFlatMembers() {
-        // Each member is a streamed (flat) string of several atoms. MemberList
+    @Test("MemberList keeps one row per member when members are streamed strings")
+    func memberListGranularityWithStreamedMembers() {
+        // Each member is a streamed string of several atoms. MemberList
         // must treat each member as ONE row — not one row per atom.
         var firstMember = SemanticString()
         firstMember.append("var", type: .keyword)
@@ -300,8 +263,8 @@ struct TwoStateStorageTests {
         #expect(list.string == "\n    var x: Int\n    var y: Int\n")
     }
 
-    @Test("Rows keeps sub-row boundaries with flat sub-rows")
-    func rowsGranularityWithFlatSubRows() {
+    @Test("Rows keeps sub-row boundaries with streamed sub-rows")
+    func rowsGranularityWithStreamedSubRows() {
         var annotation = SemanticString()
         annotation.append("// offset: 0x10", type: .comment)
         var declaration = SemanticString()
@@ -319,17 +282,32 @@ struct TwoStateStorageTests {
         #expect(list.string == "\n    // offset: 0x10\n    var x: Int\n")
     }
 
+    @Test("A builder SemanticString entry is one element")
+    func builderSemanticStringEntryIsOneElement() {
+        let member = SemanticString {
+            Keyword("var")
+            Space()
+            Variable("x")
+        }
+        let outer = SemanticString {
+            member
+        }
+        // The nested string contributed one element covering three atoms.
+        #expect(outer._storage.elementCount == 1)
+        #expect(outer.components.count == 3)
+    }
+
     // MARK: - Codable
 
-    @Test("Decoded strings are flat and re-encode byte-identically")
-    func decodedStringsAreFlat() throws {
+    @Test("Decoded strings are one-to-one and re-encode byte-identically")
+    func decodedStringsAreOneToOne() throws {
         let original = buildDeclarationBlock()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let encodedData = try encoder.encode(original)
 
         let decoded = try JSONDecoder().decode(SemanticString.self, from: encodedData)
-        #expect(decoded._storage.isFlat)
+        #expect(decoded._storage.elementEndOffsets == nil)
         #expect(decoded == original)
 
         let reencodedData = try encoder.encode(decoded)
@@ -338,11 +316,11 @@ struct TwoStateStorageTests {
 
     // MARK: - Concurrency
 
-    @Test("Concurrent cold-cache flattening of shared tree storage is consistent")
-    func concurrentFlattening() async {
-        // Expected values come from a separate, identical tree so that the
-        // shared instances under test enter the task group with a cold cache
-        // and the racing readers actually exercise the fill path.
+    @Test("Concurrent cold-cache string reads of shared storage are consistent")
+    func concurrentStringReads() async {
+        // Expected values come from a separate, identical value so that the
+        // shared instances under test enter the task group with a cold string
+        // cache and the racing readers actually exercise the fill path.
         let reference = buildDeclarationBlock()
         let expectedComponents = reference.components
         let expectedString = reference.string
