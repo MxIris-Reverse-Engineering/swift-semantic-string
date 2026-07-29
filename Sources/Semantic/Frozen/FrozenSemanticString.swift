@@ -67,12 +67,13 @@ public struct FrozenSemanticString: Sendable {
     /// deliberate loud failure, because silently truncating a mis-sliced
     /// value would be far harder to debug.
     ///
-    /// Two fields degrade instead of trapping, on every construction path:
-    /// an out-of-range `identifierIndex` resolves to `nil`, and an unknown
-    /// `typeCode` resolves to `.other`. The latter is deliberate forward
-    /// compatibility — a payload from a *newer* encoder must stay readable —
-    /// so `Codable` decoding validates the length/coverage/alignment/index
-    /// invariants but does **not** reject unknown type codes.
+    /// Two fields degrade instead of trapping, on every construction path,
+    /// decoding included: an out-of-range `identifierIndex` resolves to `nil`,
+    /// and an unknown `typeCode` resolves to `.other`. Both are deliberate
+    /// forward compatibility — a payload from a *newer* encoder must stay
+    /// readable — so `Codable` decoding validates the length/coverage/alignment
+    /// invariants but rejects neither an unknown type code nor an out-of-range
+    /// identifier index; it keeps both verbatim.
     @inlinable
     public init(text: String, spans: [Span], identifierTable: [String]) {
         self.text = text
@@ -191,6 +192,13 @@ extension FrozenSemanticString: Hashable {
     /// to every reader. Resolving each span's identifier removes the table
     /// from the comparison.
     ///
+    /// Type codes are resolved the same way, and for the same reason: an
+    /// unknown code (decoded from a future encoder) renders as `.other` in
+    /// every reader — `enumerateSpans`, `components`, styling — so a snapshot
+    /// carrying it must compare equal to one carrying `.other`'s own code.
+    /// Comparing the raw byte instead would deny that pair while every reader
+    /// reports them identical.
+    ///
     /// Note that this remains a comparison of *frozen* values: two different
     /// `SemanticString`s can freeze to equal snapshots, because a token over
     /// `UInt16.max` bytes and the same text split across adjacent same-type
@@ -225,8 +233,11 @@ extension FrozenSemanticString: Hashable {
         for (leftSpan, rightSpan) in zip(lhs.spans, rhs.spans) {
             let leftUpperBound = leftUTF8View.index(leftLowerBound, offsetBy: Int(leftSpan.length))
             let rightUpperBound = rightUTF8View.index(rightLowerBound, offsetBy: Int(rightSpan.length))
+            // Compare the *resolved* type, not the raw code: an unknown code
+            // resolves to `.other`, so two spans that every reader renders as
+            // `.other` must compare equal here too.
             guard lhs.text[leftLowerBound ..< leftUpperBound] == rhs.text[rightLowerBound ..< rightUpperBound],
-                  leftSpan.typeCode == rightSpan.typeCode,
+                  (SemanticType(frozenTypeCode: leftSpan.typeCode) ?? .other) == (SemanticType(frozenTypeCode: rightSpan.typeCode) ?? .other),
                   lhs.identifier(at: leftSpan.identifierIndex) == rhs.identifier(at: rightSpan.identifierIndex)
             else {
                 return false
@@ -242,13 +253,16 @@ extension FrozenSemanticString: Hashable {
         hasher.combine(spans.count)
         // Hash each span's text slice rather than its byte length, for the
         // same reason `==` compares slices: `String`/`Substring` hashing is
-        // canonical, so NFC/NFD values that compare equal hash equal.
+        // canonical, so NFC/NFD values that compare equal hash equal. Hash the
+        // *resolved* type rather than the raw code, for the same reason `==`
+        // compares resolved types: an unknown code resolves to `.other`, so
+        // values `==` renders equal must hash equal.
         var lowerBound = text.startIndex
         let utf8View = text.utf8
         for span in spans {
             let upperBound = utf8View.index(lowerBound, offsetBy: Int(span.length))
             hasher.combine(text[lowerBound ..< upperBound])
-            hasher.combine(span.typeCode)
+            hasher.combine(SemanticType(frozenTypeCode: span.typeCode) ?? .other)
             hasher.combine(identifier(at: span.identifierIndex))
             lowerBound = upperBound
         }

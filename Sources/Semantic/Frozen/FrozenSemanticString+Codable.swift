@@ -13,11 +13,16 @@ extension FrozenSemanticString: Codable {
         case identifierTable
     }
 
-    /// The validated construction path. Everything a reader of this type is
-    /// allowed to assume is checked here, because this is where untrusted
+    /// The validated construction path. Everything a reader of this type could
+    /// otherwise *trap* on is checked here, because this is where untrusted
     /// bytes enter: column counts agree, span lengths partition the text
-    /// exactly, no span is zero-length, every boundary falls on a Unicode
-    /// scalar, and every identifier index is in range.
+    /// exactly, no span is zero-length, and every boundary falls on a Unicode
+    /// scalar. Two fields are deliberately *not* rejected — an unknown
+    /// `typeCode` and an out-of-range `identifierIndex` — because every reader
+    /// resolves them to a graceful default (`.other`, `nil`) rather than
+    /// trapping, and rejecting them would refuse both forward-compatible
+    /// payloads and this type's own encoder output. Both are kept verbatim,
+    /// exactly as the unchecked initializer keeps them.
     ///
     /// Decode order is validation order. A hostile payload can declare
     /// millions of spans in a few megabytes of input, so nothing beyond the
@@ -97,17 +102,15 @@ extension FrozenSemanticString: Codable {
             ))
         }
 
-        // `Int(exactly:)` instead of `Int(_:)`: on 32-bit targets the plain
-        // conversion traps for indices above `Int32.max`, turning a malformed
-        // payload into a crash instead of a `DecodingError`.
-        for identifierIndex in spanIdentifierIndices where identifierIndex != 0 {
-            guard let tableIndex = Int(exactly: identifierIndex), tableIndex <= identifierTable.count else {
-                throw DecodingError.dataCorrupted(.init(
-                    codingPath: decoder.codingPath,
-                    debugDescription: "Identifier index \(identifierIndex) exceeds table of \(identifierTable.count)"
-                ))
-            }
-        }
+        // Identifier indices are kept verbatim, out-of-range values included.
+        // An out-of-range index is the exact analog of an unknown `typeCode`:
+        // a reader resolves both to a graceful default — `identifier(at:)`
+        // maps it to `nil` (safely, via its own `Int(exactly:)`) just as an
+        // unknown code renders as `.other` — so neither can trap. Rejecting it
+        // here would break round-trip idempotence: the unchecked initializer
+        // accepts such a value and the encoder emits it, so the decoder would
+        // refuse this type's own output. The structural invariants that *would*
+        // trap a reader (coverage, alignment, column counts) are enforced above.
 
         var spans: [Span] = []
         spans.reserveCapacity(spanLengths.count)

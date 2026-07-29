@@ -222,8 +222,11 @@ struct FrozenSemanticStringTests {
         expectCorrupt(#"{"text":"ab","spanLengths":[1,1],"spanTypeCodes":[0],"spanIdentifierIndices":[0,0],"identifierTable":[]}"#)
         // Lengths do not cover the text.
         expectCorrupt(#"{"text":"ab","spanLengths":[1],"spanTypeCodes":[0],"spanIdentifierIndices":[0],"identifierTable":[]}"#)
-        // Identifier index out of range.
-        expectCorrupt(#"{"text":"ab","spanLengths":[2],"spanTypeCodes":[0],"spanIdentifierIndices":[3],"identifierTable":["only"]}"#)
+        // An out-of-range identifier index is *not* corrupt: like an unknown
+        // type code it degrades to a graceful default (`nil`) in every reader,
+        // and the unchecked init / encoder produce exactly such values, so the
+        // decoder must accept it or refuse this type's own output. See
+        // `FourthReviewRegressionTests.codableRoundTripAcceptsOutOfRangeIdentifierIndex`.
     }
 
     // MARK: - Memory Shape

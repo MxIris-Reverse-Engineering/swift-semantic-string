@@ -13,6 +13,7 @@
 - [ReviewFixes.md](ReviewFixes.md) —— 独立评审后的 12 处修正：恢复 watchOS（32 位）与 Linux/Windows 可编译性、叶子快路径改为 `PlainAtomicSemanticComponent` 显式承诺（此前会丢 `identifier` 并忽略自定义 `buildComponents()`）、`isEmpty` / `frozen()` 不再把展平结果发布进共享缓存、元素视图不再装箱扁平原子、`appending` 族不再强制整份复制，以及 `FrozenSemanticString` 的解码校验与值语义。同时把 `SemanticString.swift`（997 行）按功能点拆成扩展文件。
 - [FlatStorageRedesign.md](FlatStorageRedesign.md) —— 第二轮评审（15 处确认属实，其中 10 处同源于双态设计的组合面）之后的结构性重设计：存储收敛为「单一扁平原子数组 + 显式元素边界表」，composite 在 append 时立即展平，组件缓存与 `compact()` / `convertToTree()` 整体删除。输出与 `main` 恢复逐字节一致（唯一有意偏离：零长原子在一切构造路径被丢弃），容器展平快于 `main`，「空组件毁掉 flat 表示」的 +63% 内存惩罚降为 +3.8%。**本篇取代 TwoStateStorage.md 与 StorageCorrectnessAndLockRework.md 所述的双态机制**，后两篇保留为历史记录。`FrozenSemanticString` 同批独立修复：`==` 快路径破坏传递性、32 位 `Int(UInt32)` 陷入、解码校验的文档表述。
 - [ThirdReviewFixes.md](ThirdReviewFixes.md) —— 第三轮评审（15 处全部核验属实）后的收尾修正：手工数组构造补零长元素槽（相等值不再对 `isEmpty` 给出相反答案）、容器判空统一看过滤后的展平（钉为第二条有意偏离）、Frozen `==`/`hash` 统一为 canonical 比较（NFC/NFD 冻结保相等）、`enumerateSpans` 三向违约全部 trap、超长 token 按字形簇切分、解码器「先校验长度列再物化其余列」、锁条带尺寸断言，以及 builder 收集路径慢于 `main` 约 1.4–1.7× 的如实记账（有意不修的取舍）。
+- [FourthReviewFixes.md](FourthReviewFixes.md) —— 第四轮评审后的两处 `FrozenSemanticString` 一致性修正：解码器不再拒收越界 `identifierIndex`（原样保留、读取归 nil，与 unchecked init 承诺及「解码保留未知 typeCode」对称，Codable 往返恢复逐字节幂等）；`==`/`hash` 比较**归一后**的 `SemanticType` 而非原始 `typeCode` 字节（两个都渲染为 `.other` 的快照恢复判等）。同源于「读者当降级、另一路径当原始字节」的字段处理不一致。
 
 ## 约定
 
