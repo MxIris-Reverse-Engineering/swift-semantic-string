@@ -6,6 +6,8 @@ A Swift library for building semantically typed strings using a SwiftUI-like dec
 
 - Swift 6.2+
 - No external dependencies
+- Apple platforms: macOS 10.15+, iOS 13+, macCatalyst 13+, tvOS 13+, watchOS 6+, visionOS 1+
+- Also builds on Linux and Windows. The only system dependency is a platform locking primitive (`os_unfair_lock`, `pthread_mutex_t`, or `SRWLOCK`), selected behind `#if canImport`.
 
 ## Installation
 
@@ -274,6 +276,21 @@ let data = try JSONEncoder().encode(semanticString)
 let decoded = try JSONDecoder().decode(SemanticString.self, from: data)
 ```
 
+### Zero-length components are not stored
+
+A component whose `string` is empty contributes nothing to any rendering, and building one through a component (`Keyword("")`) has always discarded it. Constructing a string from atomic components directly does the same, so both ways of assembling the same content agree:
+
+```swift
+let components = [
+    AtomicComponent(string: "a", type: .standard),
+    AtomicComponent(string: "", type: .standard),   // dropped
+    AtomicComponent(string: "b", type: .standard),
+]
+SemanticString(components: components).count   // 2, not 3
+```
+
+This is observable if you construct components by hand: a zero-length entry does not survive into `count`, `components`, subscripting, `prefix` / `suffix`, equality, hashing, or a `Codable` round trip. It never affected `string`. Callers that pair a `map` result positionally against the source array should filter empties themselves first.
+
 ## Read-Only Content: `FrozenSemanticString`
 
 `SemanticString` is the *builder* — composable, streamable, mutable. When a string is fully built and will only ever be read (rendered, encoded, exported, searched), freeze it:
@@ -305,9 +322,11 @@ Notes:
 - Use `enumerateSpans(_:)` on hot paths. `frozen.components` materializes `[AtomicComponent]` and recreates exactly the per-token allocation cost freezing removed — it exists for compatibility and tests.
 - `Span.length` is a `UInt16`, so a token longer than 65535 UTF-8 bytes is split into consecutive spans carrying the same type and identifier, at Unicode scalar boundaries. Consumers that concatenate text or attribute runs see no difference; a token-by-token count comparison against `SemanticString.components` will.
 - `FrozenSemanticString` conforms to `Codable` with a columnar encoding (one string plus four homogeneous arrays) an order of magnitude smaller on the wire than `SemanticString`'s array-of-objects form. The two formats are intentionally **not** interchangeable — both ends of any persistence or cross-process channel must agree on which one they use.
-- `SemanticType` values encode to stable `UInt8` codes. Codes are assigned append-only, and a code from a newer version decodes as `.other` rather than failing.
+- `SemanticType` values encode to stable `UInt8` codes. Codes are assigned append-only, and a code from a newer version decodes as `.other` rather than failing. Note that resolving to `.other` is lossy in one direction: a value decoded from a newer encoder keeps the original code in `spans`, but round-tripping it through `components` and re-freezing rewrites it to `.other`'s code. Forward and backward compatible readers should walk `enumerateSpans` or `spans` rather than `components`.
 - Freeze at a storage boundary — once the string is final. There is deliberately no way to compact a `SemanticString` in place and keep building with it: the element boundaries a builder exposes are semantic (a container like `MemberList` treats one element as one row), and collapsing them silently changes layout. `frozen()` gives you the compact representation with that lifecycle enforced by the type.
-- Decoding validates its input: column counts must agree, span lengths must cover the text exactly, identifier indices must be in range, and every span boundary must fall on a Unicode scalar boundary. The unchecked `init(text:spans:identifierTable:)` trusts the caller instead — use it only for parts you produced yourself.
+- `frozen()` never inflates the value it is called on. It uses the flattened-components and text caches when they are already warm, and otherwise computes both locally rather than publishing them into storage the source may be sharing.
+- Decoding validates its input: column counts must agree, span lengths must cover the text exactly, no span may be zero-length, identifier indices must be in range, and every span boundary must fall on a Unicode scalar boundary. The unchecked `init(text:spans:identifierTable:)` trusts the caller instead — use it only for parts you produced yourself. Decoding is the path for anything that arrived from another process.
+- Equality and hashing compare rendered content, not storage layout: `identifierTable` shape (duplicate or unreferenced entries, which a decoded payload keeps as they arrived) does not affect them. Two *different* `SemanticString`s can still freeze to equal snapshots, because a token over 65535 bytes and the same text split across adjacent same-type tokens produce identical spans — compare the source strings when token identity matters.
 
 ## License
 

@@ -25,7 +25,7 @@
 /// ```
 public struct Joined: SemanticStringComponent {
     @usableFromInline
-    let items: [any SemanticStringComponent]
+    let items: SemanticStringElements
 
     @usableFromInline
     let separator: any SemanticStringComponent
@@ -134,7 +134,7 @@ public struct Joined: SemanticStringComponent {
         self.separator = Standard(separator)
         self.prefix = prefix.map { Standard($0) }
         self.suffix = suffix.map { Standard($0) }
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates a joined component from an array with a component separator.
@@ -148,43 +148,43 @@ public struct Joined: SemanticStringComponent {
         self.separator = separator
         self.prefix = prefix
         self.suffix = suffix
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        // First pass: materialize item component arrays, filter out empties, count totals.
-        var materialized: [[AtomicComponent]] = []
-        materialized.reserveCapacity(items.count)
-        var totalCount = 0
-        for item in items {
-            let built = item.buildComponents()
-            if !built.isEmpty {
-                materialized.append(built)
-                totalCount += built.count
-            }
-        }
-        guard !materialized.isEmpty else { return [] }
-
         let sepComponents = separator.buildComponents()
+
+        // First pass: assemble the separated body. Empty items are skipped
+        // without emitting a separator around nothing. One scratch buffer is
+        // reused across items rather than materializing an array per item.
+        var body: [AtomicComponent] = []
+        body.reserveCapacity(items.count)
+        var itemComponents: [AtomicComponent] = []
+        var hasContent = false
+        for index in items.indices {
+            itemComponents.removeAll(keepingCapacity: true)
+            items.appendComponents(ofElementAt: index, into: &itemComponents)
+            guard !itemComponents.isEmpty else { continue }
+            if hasContent {
+                body.append(contentsOf: sepComponents)
+            }
+            body.append(contentsOf: itemComponents)
+            hasContent = true
+        }
+        // An all-empty Joined produces nothing at all — not even prefix/suffix.
+        guard hasContent else { return [] }
+
         let prefixComponents = prefix?.buildComponents() ?? []
         let suffixComponents = suffix?.buildComponents() ?? []
-
-        // Second pass: assemble prefix ++ items-with-separators ++ suffix in a single allocation.
-        var result: [AtomicComponent] = []
-        result.reserveCapacity(
-            prefixComponents.count
-                + totalCount
-                + sepComponents.count * max(materialized.count - 1, 0)
-                + suffixComponents.count
-        )
-        result.append(contentsOf: prefixComponents)
-        for (index, group) in materialized.enumerated() {
-            if index > 0 {
-                result.append(contentsOf: sepComponents)
-            }
-            result.append(contentsOf: group)
+        if prefixComponents.isEmpty, suffixComponents.isEmpty {
+            return body
         }
+
+        var result: [AtomicComponent] = []
+        result.reserveCapacity(prefixComponents.count + body.count + suffixComponents.count)
+        result.append(contentsOf: prefixComponents)
+        result.append(contentsOf: body)
         result.append(contentsOf: suffixComponents)
         return result
     }

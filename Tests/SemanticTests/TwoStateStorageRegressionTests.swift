@@ -74,10 +74,11 @@ struct TwoStateStorageRegressionTests {
 
     @Test("compacted() does not fill the cache of the value it was called on")
     func compactedDoesNotFillTheSourceCache() {
-        // `compact()` reads `components` *before* `makeUnique()`, so while the
-        // storage is still shared the flattened array is published into the
-        // original's cache and then copied. A memory-optimization API ends up
-        // increasing the footprint of the pair.
+        // Flattening through `components` while the storage is still shared
+        // would publish the flattened array into the original's cache, so a
+        // memory-optimization API would raise the footprint of the pair
+        // instead of lowering it. `compact()` therefore flattens through
+        // `componentsWithoutPublishing()`.
         let original = memberRowsString()
         #expect(original._storage.cachedComponents == nil)
 
@@ -86,20 +87,47 @@ struct TwoStateStorageRegressionTests {
         #expect(original._storage.cachedComponents == nil)
     }
 
+    @Test("frozen() does not fill the cache of the value it was called on")
+    func frozenDoesNotFillTheSourceCache() {
+        // Same hazard as `compacted()` above, on the public API: `frozen()`
+        // needs both the flattened components and the full text, and reading
+        // them through `components` / `string` would leave both in storage the
+        // source may be sharing.
+        let original = memberRowsString()
+        #expect(original._storage.cachedComponents == nil)
+        #expect(original._storage.cachedString == nil)
+
+        _ = original.frozen()
+
+        #expect(original._storage.cachedComponents == nil)
+        #expect(original._storage.cachedString == nil)
+    }
+
+    @Test("frozen() still uses the caches when they are already populated")
+    func frozenReusesAnAlreadyPopulatedCache() {
+        // Not publishing must not mean re-computing: a value that has already
+        // been rendered has the text and components on hand, and freezing it
+        // should cost neither again.
+        let original = memberRowsString()
+        let renderedString = original.string
+        let renderedComponents = original.components
+        #expect(original._storage.cachedComponents != nil)
+
+        let frozen = original.frozen()
+
+        #expect(frozen.text == renderedString)
+        #expect(frozen.components == renderedComponents)
+    }
+
     // MARK: - The Flat Fast Path Must Cover Every Leaf Component
 
     @Test("Appending an atomic leaf component keeps the flat representation")
     func atomicLeafComponentAppendKeepsFlatStorage() {
         // `Keyword`, `Space`, `BreakLine`, `Indent`, `TypeName`, … are all
-        // `AtomicSemanticComponent`s that flatten to exactly one
-        // `AtomicComponent`. The fast path tests for the erased box type
-        // `AtomicComponent` instead, so every one of them forces the whole
-        // accumulated content to be re-boxed into the tree form — the cost the
-        // flat state exists to avoid.
-        //
-        // NOTE: this contradicts `TwoStateStorageTests`'
-        // `genericLeafComponentAppendConvertsToTree`, which pins the current
-        // behavior. Only one of the two can stand.
+        // `PlainAtomicSemanticComponent`s: they flatten to exactly one
+        // `AtomicComponent` and say so in their conformance, which is what
+        // lets `append` store them straight into the flat array instead of
+        // re-boxing the accumulated content into the tree form.
         var streamed = SemanticString()
         streamed.append("prefix", type: .standard)
         #expect(streamed._storage.isFlat)
@@ -130,8 +158,8 @@ struct TwoStateStorageRegressionTests {
         // `init(text:spans:identifierTable:)` names Codable decoding as one of
         // the two *validated* construction paths, and `enumerateSpans`
         // documents that "span boundaries are always Unicode scalar aligned, so
-        // the slices are valid substrings". Decoding checks column counts,
-        // total byte coverage and identifier range — but not alignment.
+        // the slices are valid substrings". Byte coverage alone does not
+        // establish that, so decoding walks the boundaries as well.
         //
         // "汉字" is 6 UTF-8 bytes; lengths [1, 5] cover exactly 6 bytes while
         // cutting the first scalar in half.
@@ -179,14 +207,13 @@ struct TwoStateStorageRegressionTests {
     @Test("Reading shared storage while a copy is mutated is race free")
     func concurrentReadWhileCopyOnWriteMutation() async {
         // The shared cache lock guards the lazy fills in `string` /
-        // `components`, but `Storage.init(copying:)` — reached from
-        // `makeUnique()` on the copy-on-write path — reads `cachedComponents`
-        // and `cachedString` without taking it. This test exercises exactly
-        // that pairing: readers filling a cold shared cache while other tasks
+        // `components` *and* the matching reads in `Storage.init(copying:)`,
+        // which is the copy-on-write path. This test exercises exactly that
+        // pairing: readers filling a cold shared cache while other tasks
         // copy-and-mutate the same storage.
         //
-        // It passes under a normal run; run it under ThreadSanitizer
-        // (`swift test --sanitize=thread`) to see the race.
+        // Assertions alone prove nothing here — run it under ThreadSanitizer
+        // (`swift test --sanitize=thread`) to exercise what it is for.
         for _ in 0 ..< 64 {
             let shared = memberRowsString()
             await withTaskGroup(of: Void.self) { group in

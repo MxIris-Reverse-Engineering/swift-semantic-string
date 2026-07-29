@@ -14,7 +14,7 @@
 /// ```
 public struct Group: SemanticStringComponent {
     @usableFromInline
-    var items: [any SemanticStringComponent]
+    var items: SemanticStringElements
 
     @usableFromInline
     var separator: (any SemanticStringComponent)?
@@ -29,21 +29,21 @@ public struct Group: SemanticStringComponent {
     /// Creates a group from an array of semantic strings.
     @inlinable
     public init(_ items: [SemanticString]) {
-        self.items = items
+        self.items = SemanticStringElements(items)
         self.separator = nil
     }
 
     /// Creates a group from variadic semantic strings.
     @inlinable
     public init(_ items: SemanticString...) {
-        self.items = items
+        self.items = SemanticStringElements(items)
         self.separator = nil
     }
 
     /// Creates an empty group.
     @inlinable
     public init() {
-        self.items = []
+        self.items = SemanticStringElements()
         self.separator = nil
     }
 
@@ -53,14 +53,16 @@ public struct Group: SemanticStringComponent {
             let sepComponents = sep.buildComponents()
             var result: [AtomicComponent] = []
             result.reserveCapacity(items.count)
+            var itemComponents: [AtomicComponent] = []
             var needsSeparator = false
-            for item in items {
-                let components = item.buildComponents()
-                guard !components.isEmpty else { continue }
+            for index in items.indices {
+                itemComponents.removeAll(keepingCapacity: true)
+                items.appendComponents(ofElementAt: index, into: &itemComponents)
+                guard !itemComponents.isEmpty else { continue }
                 if needsSeparator {
                     result.append(contentsOf: sepComponents)
                 }
-                result.append(contentsOf: components)
+                result.append(contentsOf: itemComponents)
                 needsSeparator = true
             }
             return result
@@ -68,9 +70,7 @@ public struct Group: SemanticStringComponent {
 
         var result: [AtomicComponent] = []
         result.reserveCapacity(items.count)
-        for item in items {
-            result.append(contentsOf: item.buildComponents())
-        }
+        items.appendAllComponents(into: &result)
         return result
     }
 

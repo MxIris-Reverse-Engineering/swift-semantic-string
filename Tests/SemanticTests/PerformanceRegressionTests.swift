@@ -1488,9 +1488,10 @@ struct ForEachComponentTests {
 
     @Test("ForEach filters truly empty results with separator")
     func forEachFiltersEmpty() {
-        // SemanticString.isEmpty checks _storage.elements, not flattened output.
-        // Standard("") has elements so is not "isEmpty", but buildComponents() returns [].
-        // Only truly empty SemanticStrings (no elements) are filtered.
+        // `SemanticString.isEmpty` means "flattens to nothing", not "has no
+        // elements", so an item that produces only empty components is
+        // filtered here and gets no separator around it. See
+        // `ReviewFindingsRegressionTests.isEmptyReportsCompositesThatFlattenToNothing`.
         let forEach = ForEach(["a", "b"], separator: ", ") { item in
             if item == "a" {
                 Standard(item)

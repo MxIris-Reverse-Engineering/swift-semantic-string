@@ -10,6 +10,7 @@
 - [TwoStateStorage.md](TwoStateStorage.md) —— `SemanticString.Storage` 改为 flat / tree 双态：流式内容走零装箱的 `[AtomicComponent]`，构建期形态保留 element 边界。含新增的 `compact()` / `compacted()` 及其调用约束、缓存填充的加锁方案。实测驻留内存 1.27 GB → 382 MB。
 - [FrozenSemanticString.md](FrozenSemanticString.md) —— 在双态存储之上引入不可变终态类型 `FrozenSemanticString`：text arena + 每 token 8 字节 span + identifier 内插表 + 列式 Codable，把「构建完再也不改」从运行时约定提升为类型约束。实测再降至约 285 MB（相对基线 -78%）。
 - [StorageCorrectnessAndLockRework.md](StorageCorrectnessAndLockRework.md) —— 双态存储的审查修正：flat 态补上零长度组件过滤（此前与 tree 态行为分叉）、`isEmpty` 语义统一、`compact()` 降为内部 API、叶子组件走静态派发的 flat 快路径，以及把共享的单把 `NSLock` 换成按缓存行间隔的分片 `os_unfair_lock`（并发冷填充 434.9 ms → 44.7 ms，TSan 竞争清零，并去掉 Foundation 依赖）。
+- [ReviewFixes.md](ReviewFixes.md) —— 独立评审后的 12 处修正：恢复 watchOS（32 位）与 Linux/Windows 可编译性、叶子快路径改为 `PlainAtomicSemanticComponent` 显式承诺（此前会丢 `identifier` 并忽略自定义 `buildComponents()`）、`isEmpty` / `frozen()` 不再把展平结果发布进共享缓存、元素视图不再装箱扁平原子、`appending` 族不再强制整份复制，以及 `FrozenSemanticString` 的解码校验与值语义。同时把 `SemanticString.swift`（997 行）按功能点拆成扩展文件。
 
 ## 约定
 

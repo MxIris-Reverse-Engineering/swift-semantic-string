@@ -27,7 +27,7 @@ public struct DeclarationBlock: SemanticStringComponent {
     let header: any SemanticStringComponent
 
     @usableFromInline
-    let body: [any SemanticStringComponent]
+    let body: SemanticStringElements
 
     /// Creates a declaration block with sync builders.
     @inlinable
@@ -90,9 +90,7 @@ public struct DeclarationBlock: SemanticStringComponent {
         // Body - components handle their own structure (NestedDeclaration adds BreakLine, MemberList handles its own)
         var bodyComponents: [AtomicComponent] = []
         bodyComponents.reserveCapacity(body.count)
-        for element in body {
-            bodyComponents.append(contentsOf: element.buildComponents())
-        }
+        body.appendAllComponents(into: &bodyComponents)
         result.append(contentsOf: bodyComponents)
 
         // Closing brace with indent (only if body had content)
@@ -213,7 +211,7 @@ public struct NestedDeclaration: SemanticStringComponent {
 /// ```
 public struct BlockList: SemanticStringComponent {
     @usableFromInline
-    let items: [any SemanticStringComponent]
+    let items: SemanticStringElements
 
     @usableFromInline
     let _separatedByEmptyLine: Bool
@@ -235,14 +233,14 @@ public struct BlockList: SemanticStringComponent {
     /// Creates from an array of items.
     @inlinable
     public init(_ items: [SemanticString]) {
-        self.items = items
+        self.items = SemanticStringElements(items)
         self._separatedByEmptyLine = false
     }
 
     /// Creates from an array of components.
     @inlinable
-    public init<C: SemanticStringComponent>(_ items: [C]) {
-        self.items = items
+    public init<Component: SemanticStringComponent>(_ items: [Component]) {
+        self.items = SemanticStringElements(items)
         self._separatedByEmptyLine = false
     }
 
@@ -255,7 +253,7 @@ public struct BlockList: SemanticStringComponent {
     }
 
     @usableFromInline
-    init(items: [any SemanticStringComponent], separatedByEmptyLine: Bool) {
+    init(items: SemanticStringElements, separatedByEmptyLine: Bool) {
         self.items = items
         self._separatedByEmptyLine = separatedByEmptyLine
     }
@@ -271,15 +269,19 @@ public struct BlockList: SemanticStringComponent {
         var result: [AtomicComponent] = []
         // Rough pattern per item: leading break + item (+ optional separator break) + trailing break.
         result.reserveCapacity(items.count * 2 + 1)
+        // One scratch buffer reused across items: each item's flattening has to
+        // be inspected for emptiness before its leading break is emitted.
+        var itemComponents: [AtomicComponent] = []
         var hasContent = false
-        for item in items {
-            let group = item.buildComponents()
-            guard !group.isEmpty else { continue }
+        for index in items.indices {
+            itemComponents.removeAll(keepingCapacity: true)
+            items.appendComponents(ofElementAt: index, into: &itemComponents)
+            guard !itemComponents.isEmpty else { continue }
             if _separatedByEmptyLine && hasContent {
                 result.append(CommonAtomicComponents.breakLine)
             }
             result.append(CommonAtomicComponents.breakLine)
-            result.append(contentsOf: group)
+            result.append(contentsOf: itemComponents)
             hasContent = true
         }
         if hasContent {
@@ -329,7 +331,7 @@ public struct MemberList: SemanticStringComponent {
     let level: Int
 
     @usableFromInline
-    let items: [any SemanticStringComponent]
+    let items: SemanticStringElements
 
     /// Creates from a sync result builder.
     @inlinable
@@ -349,14 +351,14 @@ public struct MemberList: SemanticStringComponent {
     @inlinable
     public init(level: Int, _ items: [SemanticString]) {
         self.level = level
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates from an array of components.
     @inlinable
-    public init<C: SemanticStringComponent>(level: Int, _ items: [C]) {
+    public init<Component: SemanticStringComponent>(level: Int, _ items: [Component]) {
         self.level = level
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates from an async result builder.
@@ -375,15 +377,17 @@ public struct MemberList: SemanticStringComponent {
         var result: [AtomicComponent] = []
         // Rough pattern per item: break + indent + item, plus one trailing break.
         result.reserveCapacity(items.count * 3 + 1)
+        var itemComponents: [AtomicComponent] = []
         var hasContent = false
-        for item in items {
-            let group = item.buildComponents()
-            guard !group.isEmpty else { continue }
+        for index in items.indices {
+            itemComponents.removeAll(keepingCapacity: true)
+            items.appendComponents(ofElementAt: index, into: &itemComponents)
+            guard !itemComponents.isEmpty else { continue }
             result.append(CommonAtomicComponents.breakLine)
             if let indentComponent {
                 result.append(indentComponent)
             }
-            result.append(contentsOf: group)
+            result.append(contentsOf: itemComponents)
             hasContent = true
         }
         if hasContent {
@@ -436,7 +440,7 @@ public struct Rows: SemanticStringComponent {
     let level: Int
 
     @usableFromInline
-    let items: [any SemanticStringComponent]
+    let items: SemanticStringElements
 
     /// Creates from a sync result builder.
     @inlinable
@@ -456,14 +460,14 @@ public struct Rows: SemanticStringComponent {
     @inlinable
     public init(level: Int, _ items: [SemanticString]) {
         self.level = level
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates from an array of components.
     @inlinable
     public init<Component: SemanticStringComponent>(level: Int, _ items: [Component]) {
         self.level = level
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates from an async result builder.
@@ -483,17 +487,19 @@ public struct Rows: SemanticStringComponent {
         // Rough pattern per non-first sub-row: break + indent + item; first sub-row
         // is opened by the outer container's leading separator.
         result.reserveCapacity(items.count * 3)
+        var itemComponents: [AtomicComponent] = []
         var hasContent = false
-        for item in items {
-            let group = item.buildComponents()
-            guard !group.isEmpty else { continue }
+        for index in items.indices {
+            itemComponents.removeAll(keepingCapacity: true)
+            items.appendComponents(ofElementAt: index, into: &itemComponents)
+            guard !itemComponents.isEmpty else { continue }
             if hasContent {
                 result.append(CommonAtomicComponents.breakLine)
                 if let indentComponent {
                     result.append(indentComponent)
                 }
             }
-            result.append(contentsOf: group)
+            result.append(contentsOf: itemComponents)
             hasContent = true
         }
         return result

@@ -169,7 +169,7 @@ struct ConcurrencyTests {
         // Exercises the stripe index arithmetic over many addresses at once,
         // rather than hammering one storage. A miscomputed index would show up
         // here as a wrong result or a crash, not as a slowdown.
-        let stringCount = SemanticString.Storage.cacheLockStripeCount * 2
+        let stringCount = CacheLockStripes.count * 2
 
         await withTaskGroup(of: Bool.self) { group in
             for index in 0 ..< stringCount {
@@ -423,7 +423,7 @@ struct ConcurrencyTests {
         // per-member `SemanticString`s — flattened many times over. This does
         // not guarantee a stripe collision (see above); it covers the recursion
         // through the real composite components instead.
-        for index in 0 ..< (SemanticString.Storage.cacheLockStripeCount * 4) {
+        for index in 0 ..< (CacheLockStripes.count * 4) {
             let subject = nestedString(index: index)
             #expect(subject.string.contains("Type\(index)"))
         }
