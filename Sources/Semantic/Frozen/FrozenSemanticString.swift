@@ -24,8 +24,11 @@ public struct FrozenSemanticString: Sendable {
     public struct Span: Sendable, Hashable {
         /// UTF-8 byte length of the run. Tokens longer than `UInt16.max`
         /// bytes are split into consecutive spans with identical `typeCode`
-        /// and `identifierIndex` at Unicode scalar boundaries; consumers that
-        /// only concatenate or attribute runs see no difference.
+        /// and `identifierIndex` at grapheme cluster boundaries, so no span
+        /// slices a `Character` in half. The one exception is a single
+        /// cluster that itself exceeds `UInt16.max` bytes (a pathological
+        /// joiner chain): it cannot fit any span and degrades to Unicode
+        /// scalar boundary splits.
         public let length: UInt16
 
         /// `SemanticType` encoded via `SemanticType.frozenTypeCode`.
@@ -85,6 +88,17 @@ extension FrozenSemanticString {
     @inlinable
     public var string: String { text }
 
+    /// `true` when the snapshot renders nothing. On every validated value
+    /// this is equivalent to `text.isEmpty` — no span may be zero-length, so
+    /// "no spans" and "no text" coincide.
+    ///
+    /// This is *render*-emptiness, which is not the same measure as
+    /// `SemanticString.isEmpty`: the builder counts elements, and an element
+    /// that flattens to nothing (an appended `EmptyComponent`, a `nil`
+    /// optional) occupies a slot there. Freezing such a value yields an
+    /// empty snapshot — element slots are builder-side state that a snapshot
+    /// does not carry, exactly as a `Codable` round trip has always dropped
+    /// them.
     @inlinable
     public var isEmpty: Bool { spans.isEmpty }
 
@@ -120,17 +134,32 @@ extension FrozenSemanticString {
     ///
     /// Spans whose `typeCode` no longer maps to a `SemanticType` (decoded
     /// from a future encoder) resolve to `.other` rather than crashing.
+    ///
+    /// This is where the unchecked initializer's invariants are enforced, in
+    /// every direction: spans that overrun the text trap in the index
+    /// arithmetic, spans that undercover it trap after the walk, and a
+    /// boundary inside a multi-byte scalar traps at that span — a deliberate
+    /// loud failure, because silently truncating or mis-slicing the value
+    /// would be far harder to debug.
     @inlinable
     public func enumerateSpans(_ body: (_ spanText: Substring, _ type: SemanticType, _ identifier: String?) -> Void) {
         var lowerBound = text.startIndex
         let utf8View = text.utf8
         for span in spans {
             let upperBound = utf8View.index(lowerBound, offsetBy: Int(span.length))
+            precondition(
+                upperBound.samePosition(in: text.unicodeScalars) != nil,
+                "FrozenSemanticString span boundary splits a Unicode scalar; the unchecked init's invariants were violated"
+            )
             let spanText = text[lowerBound ..< upperBound]
             let type = SemanticType(frozenTypeCode: span.typeCode) ?? .other
             body(spanText, type, identifier(at: span.identifierIndex))
             lowerBound = upperBound
         }
+        precondition(
+            lowerBound == text.endIndex,
+            "FrozenSemanticString spans undercover the text; the unchecked init's invariants were violated"
+        )
     }
 
     /// Materializes the spans as `AtomicComponent`s.
@@ -181,13 +210,29 @@ extension FrozenSemanticString: Hashable {
         if lhs.identifierTable == rhs.identifierTable, lhs.spans == rhs.spans {
             return true
         }
+        // Compare each span's *text*, not its byte length. The `text`
+        // comparison above is canonical (`String ==` treats NFC and NFD as
+        // equal), so a byte-length comparison here would deny NFC/NFD pairs
+        // that every reader — `text`, `string`, `components`, rendering —
+        // reports as identical, and `frozen()` would turn equal
+        // `SemanticString`s into unequal snapshots. `Substring ==` applies
+        // the same canonical standard per span, which keeps this relation
+        // transitive.
+        var leftLowerBound = lhs.text.startIndex
+        var rightLowerBound = rhs.text.startIndex
+        let leftUTF8View = lhs.text.utf8
+        let rightUTF8View = rhs.text.utf8
         for (leftSpan, rightSpan) in zip(lhs.spans, rhs.spans) {
-            guard leftSpan.length == rightSpan.length,
+            let leftUpperBound = leftUTF8View.index(leftLowerBound, offsetBy: Int(leftSpan.length))
+            let rightUpperBound = rightUTF8View.index(rightLowerBound, offsetBy: Int(rightSpan.length))
+            guard lhs.text[leftLowerBound ..< leftUpperBound] == rhs.text[rightLowerBound ..< rightUpperBound],
                   leftSpan.typeCode == rightSpan.typeCode,
                   lhs.identifier(at: leftSpan.identifierIndex) == rhs.identifier(at: rightSpan.identifierIndex)
             else {
                 return false
             }
+            leftLowerBound = leftUpperBound
+            rightLowerBound = rightUpperBound
         }
         return true
     }
@@ -195,10 +240,17 @@ extension FrozenSemanticString: Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(text)
         hasher.combine(spans.count)
+        // Hash each span's text slice rather than its byte length, for the
+        // same reason `==` compares slices: `String`/`Substring` hashing is
+        // canonical, so NFC/NFD values that compare equal hash equal.
+        var lowerBound = text.startIndex
+        let utf8View = text.utf8
         for span in spans {
-            hasher.combine(span.length)
+            let upperBound = utf8View.index(lowerBound, offsetBy: Int(span.length))
+            hasher.combine(text[lowerBound ..< upperBound])
             hasher.combine(span.typeCode)
             hasher.combine(identifier(at: span.identifierIndex))
+            lowerBound = upperBound
         }
     }
 }

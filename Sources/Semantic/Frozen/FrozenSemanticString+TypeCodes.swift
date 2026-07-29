@@ -17,8 +17,9 @@ extension SemanticType {
     /// `.type(newKind, .declaration)` — the same code `.member(.declaration)`
     /// already owns. The decoder's `case 8 ... 17` would not have been
     /// updated, and nothing in the type system would have objected.
-    /// `FrozenTypeCodeTests` pins uniqueness so a future case cannot
-    /// reintroduce the collision.
+    /// `FrozenSemanticStringTests.typeCodeBijection` pins uniqueness and
+    /// round-tripping over `allCases`, so a future case cannot reintroduce
+    /// the collision without failing it.
     @inlinable
     public var frozenTypeCode: UInt8 {
         switch self {

@@ -68,9 +68,11 @@ public struct DeclarationBlock: SemanticStringComponent {
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
         var result: [AtomicComponent] = []
-        // Conservative lower bound: header + space + "{" + body + break + indent + "}" ≈ body.count + 8.
-        // Array grows geometrically, so under-reserving is harmless.
-        result.reserveCapacity(body.count + 8)
+        // Reserve for the body's *components*, not its elements: the typical
+        // body is a single MemberList element carrying every member's atoms,
+        // so `body.count` would reserve almost nothing and the append loop
+        // below would reallocate geometrically through thousands of atoms.
+        result.reserveCapacity(body.totalComponentCount + 8)
 
         // Compute header/closing indent once per call. DeclarationBlock indents
         // by (level - 1), so level 0/1 produce an empty indent string that is

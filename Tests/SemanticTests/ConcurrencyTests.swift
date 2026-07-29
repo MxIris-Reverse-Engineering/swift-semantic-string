@@ -362,70 +362,20 @@ struct ConcurrencyTests {
         }
     }
 
-    // MARK: - Lock Ordering
-
-    @Test("Flattening a nested string that shares its stripe never deadlocks")
-    func flatteningNestedStringSharingAStripeDoesNotDeadlock() {
-        // Flattening a string reads the `components` of every nested string it
-        // holds, and each of those takes its own stripe lock. `os_unfair_lock`
-        // is not recursive, so if flattening ever ran *inside* the lock, this
-        // self-deadlocks as soon as an outer storage and one of its nested
-        // storages land on the same stripe. A regression hangs rather than
-        // fails, which is the intended signal.
-        //
-        // Such a collision cannot be reached by building many pairs and hoping.
-        // The stripe index is a multiplicative hash of the storage address, and
-        // multiplication is linear: two storages allocated a *fixed* number of
-        // bytes apart — which is exactly what a loop building identical pairs
-        // produces — always differ by the same stripe delta, so they either
-        // always collide or never do. Measured: 4096 identical pairs, zero
-        // collisions. Varying how much is allocated *between* the two storages
-        // moves that delta, and collisions appear on a fixed period (186, 373,
-        // 560, … with the current stripe count).
-        //
-        // So search for a colliding gap, then flatten. `collisionWasExercised`
-        // keeps the test honest: without it, a future change to the stripe
-        // function could make collisions unreachable and this would silently
-        // pass while testing nothing.
-        var retainedValues: [Any] = []
-        var collisionWasExercised = false
-
-        for allocationGap in 0 ..< 1024 {
-            let nestedMember = memberString("value\(allocationGap)")
-
-            var filler: [SemanticString] = []
-            filler.reserveCapacity(allocationGap)
-            for fillerIndex in 0 ..< allocationGap {
-                filler.append(SemanticString(components: [AtomicComponent(string: "f\(fillerIndex)", type: .standard)]))
-            }
-
-            let outer = SemanticString {
-                nestedMember
-            }
-
-            if outer._storage.cacheLock == nestedMember._storage.cacheLock {
-                // Both flattening paths recurse into `nestedMember` while the
-                // shared stripe would already be held.
-                let expectedString = memberString("value\(allocationGap)").string
-                #expect(outer.string == expectedString)
-                #expect(outer.components == memberString("value\(allocationGap)").components)
-                collisionWasExercised = true
-            }
-
-            retainedValues.append(nestedMember)
-            retainedValues.append(filler)
-            retainedValues.append(outer)
-        }
-
-        #expect(collisionWasExercised, "no stripe collision was reachable, so the recursive lock path went untested")
-    }
+    // MARK: - Nested Flattening
+    //
+    // The flat storage removed the recursive locking path this section once
+    // guarded: composites flatten eagerly at append time, so computing
+    // `string` touches exactly one storage and takes exactly one stripe —
+    // never a nested string's. The stripe-collision search that pinned the
+    // old "flatten inside a held stripe" deadlock is gone with it; what
+    // remains below are smoke tests over the same nested shapes.
 
     @Test("Deeply nested composite strings flatten without deadlocking")
     func nestedCompositeStringsFlattenWithoutDeadlock() {
         // The realistic shape — `DeclarationBlock` over `MemberList` over
-        // per-member `SemanticString`s — flattened many times over. This does
-        // not guarantee a stripe collision (see above); it covers the recursion
-        // through the real composite components instead.
+        // per-member `SemanticString`s — built and rendered many times over,
+        // enough values to sweep the whole stripe table.
         for index in 0 ..< (CacheLockStripes.count * 4) {
             let subject = nestedString(index: index)
             #expect(subject.string.contains("Type\(index)"))
@@ -434,11 +384,10 @@ struct ConcurrencyTests {
 
     @Test("Concurrent reads of nested strings from both ends never deadlock")
     func concurrentNestedReadsFromBothEndsDoNotDeadlock() async {
-        // Tasks enter from the outside (flattening the outer string, which
-        // locks the nested storages) and from the inside (locking a nested
-        // storage directly) at the same time. Unlike the collision search
-        // above this makes no claim about sharing a stripe; it covers the
-        // two-level ordering under real contention.
+        // Tasks render the outer string (whose storage copied the member's
+        // atoms at build time) and the inner member concurrently. Each read
+        // locks only its own storage's stripe; this covers that independence
+        // under real contention.
         for index in 0 ..< Self.roundCount {
             let nestedMember = memberString("shared\(index)")
             let outer = SemanticString {

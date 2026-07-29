@@ -77,6 +77,14 @@ struct SemanticStringElements: Sendable {
     /// The components of element `index`, as a zero-copy slice of the
     /// underlying flat array. Empty exactly when the element flattens to
     /// nothing.
+    ///
+    /// The slice's indices are **not zero-based**: a `.contents` slice keeps
+    /// the element's absolute offsets into the flat array, while a `.strings`
+    /// slice starts at 0 — so `slice[0]` works for one representation and
+    /// traps for the other. Consume the slice only through its own
+    /// properties (`isEmpty`, `first`, `last`, iteration,
+    /// `append(contentsOf:)`), never through literal positions. `index` must
+    /// come from `indices`; out-of-range values trap on the slicing itself.
     @inlinable
     func atoms(ofElementAt index: Int) -> ArraySlice<AtomicComponent> {
         switch representation {

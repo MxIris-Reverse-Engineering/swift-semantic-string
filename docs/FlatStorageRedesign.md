@@ -38,7 +38,7 @@ final class Storage {
 | --- | --- |
 | 空 composite append 毁掉 flat（+63% 内存） | 不存在第二种状态可翻转；实测差距降到 +3.8%（边界表本身） |
 | `frozen()` / `isEmpty` 填满嵌套子串的缓存 | `components` 就是存储，读取无副作用；「发布/不发布」概念整个消失 |
-| 容器 scratch 循环比 main 慢 1.7× | 容器直接切零拷贝 slice，实测**比 main 快**（Joined 82 vs 99 ms） |
+| 容器 scratch 循环比 main 慢 1.7× | 容器直接切零拷贝 slice，`[SemanticString]` 条目形态实测**比 main 快**（Joined 82 vs 99 ms）；builder 收集路径是另一笔账，见第三轮修正记录 |
 | 定制叶子被拆成多元素 / 粒度分叉 | 所有 append 汇合到一个漏斗，粒度=边界表，一处定义 |
 | `compact()` 丢缓存、死代码、不变式漏洞 | `compact()` / `convertToTree()` / 组件缓存整体删除 |
 | ForEach 判空每条目双展平 | `isEmpty` 是 O(1) 元素计数 |
@@ -63,7 +63,7 @@ final class Storage {
 
 - 公开 API 无删减；`SemanticString` 的可观察行为回到与 `main` 逐字节一致，仅第 3 条（零长原子过滤）是有意偏离，依赖「空原子占 `count`」或旧编码载荷含空原子的调用方受影响。
 - 内部：`Storage` 字段全换（`isFlat` / `flatComponents` / `treeElements` / `cachedComponents` → `atoms` / `elementEndOffsets`），`SemanticStringElements` 表示改为 `contents` / `strings` 两种零拷贝形态，直接触达 `_storage` 的测试全部迁移。
-- 性能：容器展平快于 main；流式追加零开销不变；`components` 读取从「锁 + 缓存」变为直读存储；40 万 token 场景「先 append 一个空组件再流式写入」的内存惩罚从 +24.7 MB 降到 +1.5 MB。
+- 性能：`[SemanticString]` 条目形态的容器展平与流式追加快于 main；builder 收集路径（每个 `content:` 闭包）因急切展平多付一次拷贝、慢于 main 约 1.4–1.7×（第三轮评审量化，见 [ThirdReviewFixes.md](ThirdReviewFixes.md)）；`components` 读取从「锁 + 缓存」变为直读存储；40 万 token 场景「先 append 一个空组件再流式写入」的内存惩罚从 +24.7 MB 降到 +1.5 MB。
 
 ## 验证
 

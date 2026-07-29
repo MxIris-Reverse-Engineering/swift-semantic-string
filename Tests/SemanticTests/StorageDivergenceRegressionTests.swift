@@ -5,18 +5,17 @@ import Testing
 /// Behaviors that must hold regardless of how `SemanticString` stores its
 /// contents internally.
 ///
-/// Every test here uses only API that exists both before and after the
-/// two-state storage change, so the same file can be compiled and run against
-/// either revision. That makes the suite a differential harness: a test that
-/// fails only after the change is a regression, a test that fails on both is a
-/// pre-existing inconsistency.
+/// Every test here uses only public API that has existed across every storage
+/// design this library has had — the boxed element tree, the two-state
+/// flat/tree storage, and the current flat atoms + boundary table — so the
+/// same file compiles and runs against any revision. That makes the suite a
+/// differential harness: a test that fails only after a storage change is a
+/// regression, a test that fails on both sides is a pre-existing
+/// inconsistency.
 ///
-/// The invariant under test is the one the new storage documents for itself —
-/// "the flat form only ever holds content the old storage would have kept as
-/// individually boxed `AtomicComponent` elements, so the `elements` view has
-/// the same per-atom granularity in both representations" — plus the
-/// long-standing rule recorded in AGENTS.md: "Empty strings are filtered at
-/// the atomic level".
+/// The invariants under test: content and granularity are unchanged by how a
+/// value was assembled (streamed, built, spliced), and the long-standing rule
+/// recorded in AGENTS.md — "Empty strings are filtered at the atomic level".
 @Suite("Storage Divergence Regressions")
 struct StorageDivergenceRegressionTests {
     // MARK: - Helpers

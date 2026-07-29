@@ -18,18 +18,23 @@ extension FrozenSemanticString: Codable {
     /// bytes enter: column counts agree, span lengths partition the text
     /// exactly, no span is zero-length, every boundary falls on a Unicode
     /// scalar, and every identifier index is in range.
+    ///
+    /// Decode order is validation order. A hostile payload can declare
+    /// millions of spans in a few megabytes of input, so nothing beyond the
+    /// lengths column is materialized until that column has been proven
+    /// consistent with the text: the span count is bounded by the text's byte
+    /// count first (every span covers at least one byte), which caps what the
+    /// remaining columns are allowed to cost before they are decoded.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let text = try container.decode(String.self, forKey: .text)
         let spanLengths = try container.decode([UInt16].self, forKey: .spanLengths)
-        let spanTypeCodes = try container.decode([UInt8].self, forKey: .spanTypeCodes)
-        let spanIdentifierIndices = try container.decode([UInt32].self, forKey: .spanIdentifierIndices)
-        let identifierTable = try container.decode([String].self, forKey: .identifierTable)
 
-        guard spanLengths.count == spanTypeCodes.count, spanLengths.count == spanIdentifierIndices.count else {
+        let textUTF8ByteCount = text.utf8.count
+        guard spanLengths.count <= textUTF8ByteCount else {
             throw DecodingError.dataCorrupted(.init(
                 codingPath: decoder.codingPath,
-                debugDescription: "Span column counts differ: \(spanLengths.count) lengths, \(spanTypeCodes.count) type codes, \(spanIdentifierIndices.count) identifier indices"
+                debugDescription: "Payload declares \(spanLengths.count) spans for a text of \(textUTF8ByteCount) bytes; every span must cover at least one byte"
             ))
         }
 
@@ -53,10 +58,42 @@ extension FrozenSemanticString: Codable {
             }
             coveredUTF8ByteCount += UInt64(length)
         }
-        guard coveredUTF8ByteCount == UInt64(text.utf8.count) else {
+        guard coveredUTF8ByteCount == UInt64(textUTF8ByteCount) else {
             throw DecodingError.dataCorrupted(.init(
                 codingPath: decoder.codingPath,
-                debugDescription: "Span lengths cover \(coveredUTF8ByteCount) bytes but text has \(text.utf8.count)"
+                debugDescription: "Span lengths cover \(coveredUTF8ByteCount) bytes but text has \(textUTF8ByteCount)"
+            ))
+        }
+
+        // Covering the right number of bytes is not enough: a boundary in the
+        // middle of a multi-byte scalar passes the coverage check and then
+        // makes `enumerateSpans` hand out slices that do not correspond to the
+        // spans. Walk the boundaries once and reject them here, where the
+        // payload is still identifiable as corrupt. Safe to walk now: the
+        // coverage check above proved the offsets stay in bounds.
+        let utf8View = text.utf8
+        var spanBoundary = utf8View.startIndex
+        for length in spanLengths {
+            spanBoundary = utf8View.index(spanBoundary, offsetBy: Int(length))
+            guard spanBoundary.samePosition(in: text.unicodeScalars) != nil else {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Span boundary at UTF-8 offset \(utf8View.distance(from: utf8View.startIndex, to: spanBoundary)) splits a Unicode scalar"
+                ))
+            }
+        }
+
+        // The lengths column is fully validated; the remaining columns can
+        // now cost at most one entry per proven span (plus the identifier
+        // table, whose size the payload pays for in its own bytes).
+        let spanTypeCodes = try container.decode([UInt8].self, forKey: .spanTypeCodes)
+        let spanIdentifierIndices = try container.decode([UInt32].self, forKey: .spanIdentifierIndices)
+        let identifierTable = try container.decode([String].self, forKey: .identifierTable)
+
+        guard spanLengths.count == spanTypeCodes.count, spanLengths.count == spanIdentifierIndices.count else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Span column counts differ: \(spanLengths.count) lengths, \(spanTypeCodes.count) type codes, \(spanIdentifierIndices.count) identifier indices"
             ))
         }
 
@@ -68,25 +105,6 @@ extension FrozenSemanticString: Codable {
                 throw DecodingError.dataCorrupted(.init(
                     codingPath: decoder.codingPath,
                     debugDescription: "Identifier index \(identifierIndex) exceeds table of \(identifierTable.count)"
-                ))
-            }
-        }
-
-        // Covering the right number of bytes is not enough: a boundary in the
-        // middle of a multi-byte scalar passes the coverage check and then
-        // makes `enumerateSpans` hand out slices that do not correspond to the
-        // spans — silently, because String index rounding absorbs the
-        // misalignment. Walk the boundaries once and reject them here, where
-        // the payload is still identifiable as corrupt. Safe to walk now: the
-        // coverage check above proved the offsets stay in bounds.
-        let utf8View = text.utf8
-        var spanBoundary = utf8View.startIndex
-        for length in spanLengths {
-            spanBoundary = utf8View.index(spanBoundary, offsetBy: Int(length))
-            guard spanBoundary.samePosition(in: text.unicodeScalars) != nil else {
-                throw DecodingError.dataCorrupted(.init(
-                    codingPath: decoder.codingPath,
-                    debugDescription: "Span boundary at UTF-8 offset \(utf8View.distance(from: utf8View.startIndex, to: spanBoundary)) splits a Unicode scalar"
                 ))
             }
         }

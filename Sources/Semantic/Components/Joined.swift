@@ -165,9 +165,12 @@ public struct Joined: SemanticStringComponent {
         let prefixComponents = prefix?.buildComponents() ?? []
         let suffixComponents = suffix?.buildComponents() ?? []
 
-        // Single pass over zero-copy element slices, assembled into one
-        // reserved allocation. Empty items are skipped without emitting a
-        // separator around nothing.
+        // Assembly is one pass over zero-copy element slices into one
+        // reserved allocation. (The `hasContent` probe above is a second
+        // touch in the worst case, but it stops at the first non-empty item —
+        // it exists so an all-empty input returns `[]` without allocating
+        // for the prefix and suffix.) Empty items are skipped without
+        // emitting a separator around nothing.
         var result: [AtomicComponent] = []
         result.reserveCapacity(
             prefixComponents.count

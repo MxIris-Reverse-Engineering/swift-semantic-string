@@ -6,7 +6,7 @@ import Glibc
 import Musl
 #elseif canImport(Bionic)
 import Bionic
-#elseif os(Windows)
+#elseif canImport(WinSDK)
 import WinSDK
 #endif
 
@@ -34,7 +34,7 @@ enum CacheLockStripes {
     #if canImport(Darwin)
     @usableFromInline
     typealias Primitive = os_unfair_lock_s
-    #elseif os(Windows)
+    #elseif canImport(WinSDK)
     @usableFromInline
     typealias Primitive = SRWLOCK
     #else
@@ -62,6 +62,16 @@ enum CacheLockStripes {
     /// through `lock` / `unlock`.
     @usableFromInline
     nonisolated(unsafe) static let base: UnsafeMutableRawPointer = {
+        // `stride` is sized for cache lines, not for the primitive: Darwin's
+        // lock is 4 bytes and `SRWLOCK` is pointer-sized, but
+        // `pthread_mutex_t` is an opaque platform-defined block (40 bytes on
+        // glibc, no guarantee elsewhere). If a platform's primitive ever
+        // outgrew the stripe, adjacent stripes would overlap and mutual
+        // exclusion would silently vanish — fail loudly here instead.
+        precondition(
+            MemoryLayout<Primitive>.stride <= stride,
+            "CacheLockStripes.stride must fit the platform's locking primitive"
+        )
         let table = UnsafeMutableRawPointer.allocate(byteCount: count * stride, alignment: stride)
         for stripeIndex in 0 ..< count {
             let stripe = table.advanced(by: stripeIndex * stride)
@@ -98,7 +108,7 @@ enum CacheLockStripes {
     static func lock(_ stripe: UnsafeMutablePointer<Primitive>) {
         #if canImport(Darwin)
         os_unfair_lock_lock(stripe)
-        #elseif os(Windows)
+        #elseif canImport(WinSDK)
         AcquireSRWLockExclusive(stripe)
         #else
         pthread_mutex_lock(stripe)
@@ -109,7 +119,7 @@ enum CacheLockStripes {
     static func unlock(_ stripe: UnsafeMutablePointer<Primitive>) {
         #if canImport(Darwin)
         os_unfair_lock_unlock(stripe)
-        #elseif os(Windows)
+        #elseif canImport(WinSDK)
         ReleaseSRWLockExclusive(stripe)
         #else
         pthread_mutex_unlock(stripe)
@@ -122,7 +132,7 @@ enum CacheLockStripes {
     /// down, so there is no matching destroy.
     @usableFromInline
     static func initializePrimitive(_ stripe: UnsafeMutablePointer<Primitive>) {
-        #if os(Windows)
+        #if canImport(WinSDK)
         InitializeSRWLock(stripe)
         #else
         pthread_mutex_init(stripe, nil)

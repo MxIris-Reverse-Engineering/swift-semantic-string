@@ -125,11 +125,13 @@ struct FrozenSemanticStringTests {
 
     // MARK: - Long Token Splitting
 
-    @Test("Tokens beyond UInt16.max UTF-8 bytes split at scalar boundaries")
+    @Test("Tokens beyond UInt16.max UTF-8 bytes split at grapheme boundaries")
     func longTokenSplitting() {
-        // 30,000 three-byte scalars = 90,000 UTF-8 bytes — forces splitting,
-        // and 65,535 is not divisible by 3 so a naive byte split would tear
-        // a scalar.
+        // 30,000 three-byte characters = 90,000 UTF-8 bytes — forces
+        // splitting, and 65,535 is not divisible by 3 so a naive byte split
+        // would tear a scalar. Each 汉 is a single-scalar cluster, so this
+        // pins the alignment arithmetic; the multi-scalar-cluster case is
+        // `ThirdReviewRegressionTests.oversizedTokenSplitsAtGraphemeClusterBoundaries`.
         let longToken = String(repeating: "汉", count: 30000)
         var semanticString = SemanticString()
         semanticString.append(longToken, type: .comment)

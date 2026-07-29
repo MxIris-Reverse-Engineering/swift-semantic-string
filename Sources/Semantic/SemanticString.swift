@@ -46,6 +46,18 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     /// carrying it across the copy would cost a lock round trip for a value
     /// that is discarded on the next line. This is the only copy-on-write
     /// path; it is `@inlinable` because it touches no locking primitive.
+    ///
+    /// The unlocked `cachedString` write below is the deliberate exception to
+    /// the storage's "every access to `cachedString` goes through
+    /// `cacheLock`" rule, and it is sound only because of the branch it sits
+    /// in: `isKnownUniquelyReferenced` proves this value holds the sole
+    /// strong reference, no `Storage` is ever reachable except through a
+    /// `SemanticString`'s strong reference, and mutating a value while
+    /// another thread reads the *same* value is already a race at the struct
+    /// level (exclusivity). Any future change that lets a `Storage` be
+    /// reached without a strong reference — an intern table, an `Unmanaged`
+    /// fast path, a `weak` cache — invalidates this reasoning and must move
+    /// the write under the stripe lock.
     @inlinable
     mutating func makeUniqueForMutation() {
         if isKnownUniquelyReferenced(&_storage) {
@@ -164,23 +176,28 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         }
     }
 
-    /// Creates a string from atomic components.
+    /// Creates a string from atomic components, one element each.
     ///
-    /// Zero-length components are dropped, because they are not observable in
-    /// any other construction path: flattening already discards them
-    /// (`AtomicComponent.buildComponents()` returns `[]` for an empty string),
-    /// so keeping them here would make the same content compare, hash, and
-    /// count differently depending on how it was built.
+    /// Zero-length components are dropped from the atoms, because they are not
+    /// observable in any other construction path: flattening already discards
+    /// them (`AtomicComponent.buildComponents()` returns `[]` for an empty
+    /// string), so keeping them here would make the same content compare,
+    /// hash, and count differently depending on how it was built. A dropped
+    /// entry still records a zero-length *element* — exactly what appending
+    /// the same component would do — so equal values agree on `isEmpty`
+    /// however they were built.
     ///
     /// This is observable to callers that construct components by hand: a
     /// zero-length entry does not survive into `count`, `components`,
-    /// subscripting, `Codable` round trips, or equality. It never affected
-    /// `string`.
+    /// subscripting, `Codable` round trips, or equality, and an element that
+    /// consists only of zero-length entries is empty to containers (no row,
+    /// no separator) — the same treatment `Keyword("")` has always had.
     @inlinable
     public init(components: [AtomicComponent]) {
+        let contents = Self.flatContents(droppingZeroLengthComponentsFrom: components)
         self._storage = Storage(
-            atoms: Self.droppingZeroLengthComponents(components),
-            elementEndOffsets: nil
+            atoms: contents.atoms,
+            elementEndOffsets: contents.elementEndOffsets
         )
     }
 
@@ -191,14 +208,27 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     }
 
     /// Upholds the storage's "no zero-length components" invariant for
-    /// caller-supplied arrays. Scans first so the common case — nothing to
-    /// drop — keeps the array as is instead of reallocating it.
+    /// caller-supplied arrays while keeping one element slot per input
+    /// component. Scans first so the common case — nothing to drop — keeps
+    /// the array as is, with the boundary table elided (1:1).
     @usableFromInline
-    internal static func droppingZeroLengthComponents(_ components: [AtomicComponent]) -> [AtomicComponent] {
-        if components.contains(where: { $0.string.isEmpty }) {
-            return components.filter { !$0.string.isEmpty }
+    internal static func flatContents(
+        droppingZeroLengthComponentsFrom components: [AtomicComponent]
+    ) -> (atoms: [AtomicComponent], elementEndOffsets: [Int]?) {
+        guard components.contains(where: { $0.string.isEmpty }) else {
+            return (components, nil)
         }
-        return components
+        var atoms: [AtomicComponent] = []
+        atoms.reserveCapacity(components.count)
+        var elementEndOffsets: [Int] = []
+        elementEndOffsets.reserveCapacity(components.count)
+        for component in components {
+            if !component.string.isEmpty {
+                atoms.append(component)
+            }
+            elementEndOffsets.append(atoms.count)
+        }
+        return (atoms, elementEndOffsets)
     }
 
     /// Creates a string holding one component as one element.

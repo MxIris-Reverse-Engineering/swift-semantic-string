@@ -61,7 +61,10 @@ extension SemanticString {
 
         /// Lazy concatenation cache. The single piece of state that may be
         /// written while the storage is shared; every access goes through
-        /// `cacheLock`.
+        /// `cacheLock`, with one audited exception:
+        /// `makeUniqueForMutation()` clears it without the lock *after
+        /// proving unique ownership* via `isKnownUniquelyReferenced` — see
+        /// the soundness argument there.
         @usableFromInline
         var cachedString: String?
 

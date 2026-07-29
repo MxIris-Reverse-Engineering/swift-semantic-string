@@ -55,7 +55,7 @@ extension SemanticString {
         return FrozenSemanticString(text: text, spans: spans, identifierTable: identifierTable)
     }
 
-    /// Emits one span for the common case, or several scalar-aligned spans
+    /// Emits one span for the common case, or several grapheme-aligned spans
     /// when a single token exceeds `UInt16.max` UTF-8 bytes.
     @usableFromInline
     internal static func appendSpans(
@@ -70,15 +70,44 @@ extension SemanticString {
             return
         }
 
-        // Split at Unicode scalar boundaries so every span slices cleanly.
+        // Split at grapheme cluster boundaries: a split inside a cluster
+        // (e.g. between the scalars of a ZWJ emoji sequence) still
+        // concatenates back to the same text, but every span consumer —
+        // styling, selection, `components` — sees a broken half-cluster.
+        // Cluster boundaries are scalar boundaries, so the decoder's
+        // alignment validation accepts these spans unchanged.
         var currentSpanByteCount = 0
-        for unicodeScalar in tokenString.unicodeScalars {
-            let scalarByteCount = UTF8.width(unicodeScalar)
-            if currentSpanByteCount + scalarByteCount > Int(UInt16.max) {
+        for character in tokenString {
+            var characterByteCount = 0
+            for unicodeScalar in character.unicodeScalars {
+                characterByteCount += UTF8.width(unicodeScalar)
+            }
+
+            if characterByteCount > Int(UInt16.max) {
+                // A single cluster that cannot fit any span — a pathological
+                // joiner chain. Flush what has accumulated, then degrade to
+                // scalar-boundary splits for this cluster alone; its tail
+                // keeps accumulating with the following characters.
+                if currentSpanByteCount > 0 {
+                    spans.append(.init(length: UInt16(currentSpanByteCount), typeCode: typeCode, identifierIndex: identifierIndex))
+                    currentSpanByteCount = 0
+                }
+                for unicodeScalar in character.unicodeScalars {
+                    let scalarByteCount = UTF8.width(unicodeScalar)
+                    if currentSpanByteCount + scalarByteCount > Int(UInt16.max) {
+                        spans.append(.init(length: UInt16(currentSpanByteCount), typeCode: typeCode, identifierIndex: identifierIndex))
+                        currentSpanByteCount = 0
+                    }
+                    currentSpanByteCount += scalarByteCount
+                }
+                continue
+            }
+
+            if currentSpanByteCount + characterByteCount > Int(UInt16.max) {
                 spans.append(.init(length: UInt16(currentSpanByteCount), typeCode: typeCode, identifierIndex: identifierIndex))
                 currentSpanByteCount = 0
             }
-            currentSpanByteCount += scalarByteCount
+            currentSpanByteCount += characterByteCount
         }
         if currentSpanByteCount > 0 {
             spans.append(.init(length: UInt16(currentSpanByteCount), typeCode: typeCode, identifierIndex: identifierIndex))

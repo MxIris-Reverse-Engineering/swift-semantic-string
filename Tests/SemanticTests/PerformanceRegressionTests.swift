@@ -1486,12 +1486,15 @@ struct ForEachComponentTests {
         #expect(forEach.buildComponents().map(\.string) == ["only"])
     }
 
-    @Test("ForEach filters truly empty results with separator")
+    @Test("ForEach joins per-item builder output with the separator")
     func forEachFiltersEmpty() {
-        // `SemanticString.isEmpty` means "flattens to nothing", not "has no
-        // elements", so an item that produces only empty components is
-        // filtered here and gets no separator around it. See
-        // `ReviewFindingsRegressionTests.isEmptyReportsCompositesThatFlattenToNothing`.
+        // Both items here produce content, so nothing is filtered: this pins
+        // the plain joining behavior. Note that `SemanticString.isEmpty`
+        // counts *elements*, so an item whose builder emits a zero-output
+        // element still gets its separator — `ForEach` over ["a", "", "b"]
+        // renders "a, , b", exactly as on the historical element tree. That
+        // edge is pinned by
+        // `RedesignRegressionTests.forEachSeparatorMatchesMainAroundEmptyItems`.
         let forEach = ForEach(["a", "b"], separator: ", ") { item in
             if item == "a" {
                 Standard(item)

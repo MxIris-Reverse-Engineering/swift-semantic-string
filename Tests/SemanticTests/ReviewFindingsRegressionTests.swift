@@ -293,13 +293,18 @@ struct ReviewFindingsRegressionTests {
     }
 
     static var everySemanticType: [SemanticType] {
+        // Built from `allCases` so a future `TypeKind`/`Context` case is
+        // covered automatically — a hardcoded kind list would keep passing
+        // while the new case collides with `.member`'s fixed codes. The
+        // uniqueness guard itself is
+        // `FrozenSemanticStringTests.typeCodeBijection`.
         var types: [SemanticType] = [.standard, .comment, .keyword, .variable, .numeric, .argument, .error, .other]
-        for typeKind in [SemanticType.TypeKind.enum, .struct, .class, .protocol, .other] {
-            for context in [SemanticType.Context.declaration, .name] {
+        for typeKind in SemanticType.TypeKind.allCases {
+            for context in SemanticType.Context.allCases {
                 types.append(.type(typeKind, context))
             }
         }
-        for context in [SemanticType.Context.declaration, .name] {
+        for context in SemanticType.Context.allCases {
             types.append(.member(context))
             types.append(.function(context))
         }

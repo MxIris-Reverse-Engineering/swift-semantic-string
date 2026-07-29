@@ -324,10 +324,12 @@ struct CacheReuseStressTests {
         #expect(semanticString.components.count == 1_000)
 
         // `components` hands out the storage array by reference, so 1,000
-        // reads are 1,000 retain/release pairs. A relative baseline is
-        // useless here — there is no build step to compare against — but an
-        // absolute bound still separates O(1) from an O(n) re-flatten, which
-        // would cost seconds at this size.
+        // reads are 1,000 retain/release pairs — microseconds in total. A
+        // relative baseline is useless here (there is no build step to
+        // compare against), so this is an absolute bound. It is not a wide
+        // one: an O(n) re-flatten regression measures around 1.5–2× this
+        // limit, but the passing side has three orders of magnitude of
+        // headroom, so the assertion is stable where it needs to be.
         #expect(readElapsed < .milliseconds(50))
     }
 }
