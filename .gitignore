@@ -7,3 +7,6 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 .swiftpm
+
+# Claude Code linked worktrees live here; they are full checkouts, not sources.
+/.claude/worktrees/
