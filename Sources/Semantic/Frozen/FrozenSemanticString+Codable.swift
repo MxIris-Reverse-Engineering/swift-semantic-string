@@ -24,12 +24,18 @@ extension FrozenSemanticString: Codable {
     /// payloads and this type's own encoder output. Both are kept verbatim,
     /// exactly as the unchecked initializer keeps them.
     ///
-    /// Decode order is validation order. A hostile payload can declare
-    /// millions of spans in a few megabytes of input, so nothing beyond the
-    /// lengths column is materialized until that column has been proven
-    /// consistent with the text: the span count is bounded by the text's byte
-    /// count first (every span covers at least one byte), which caps what the
-    /// remaining columns are allowed to cost before they are decoded.
+    /// Decode order is validation order, and it bounds what *this
+    /// initializer* builds: the `[Span]` array is only assembled after the
+    /// lengths column has been proven consistent with the text. It does
+    /// **not** bound what the decoder itself materializes — `JSONDecoder`
+    /// parses the entire document before `init(from:)` runs, and each
+    /// `container.decode([...].self, ...)` call materializes that whole
+    /// column regardless of the checks here (measured: a 38 MB hostile
+    /// payload declaring twenty million entries in one column peaks near
+    /// 1 GB of resident memory even when the consumer decodes nothing but
+    /// `text`). Callers feeding this type untrusted bytes must cap the
+    /// payload size *before* handing it to a decoder; no validation order
+    /// inside this initializer can do it for them.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let text = try container.decode(String.self, forKey: .text)
@@ -88,9 +94,11 @@ extension FrozenSemanticString: Codable {
             }
         }
 
-        // The lengths column is fully validated; the remaining columns can
-        // now cost at most one entry per proven span (plus the identifier
-        // table, whose size the payload pays for in its own bytes).
+        // The lengths column is fully validated; the `[Span]` array assembled
+        // below is now bounded by the proven span count. The three decode
+        // calls here still materialize whatever the payload declares (see the
+        // initializer doc) — bounding that is the caller's job, upstream of
+        // the decoder.
         let spanTypeCodes = try container.decode([UInt8].self, forKey: .spanTypeCodes)
         let spanIdentifierIndices = try container.decode([UInt32].self, forKey: .spanIdentifierIndices)
         let identifierTable = try container.decode([String].self, forKey: .identifierTable)

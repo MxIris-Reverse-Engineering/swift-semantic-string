@@ -31,9 +31,10 @@ extension SemanticString {
     /// A **zero-length element** (`elementEndOffsets[i] ==
     /// elementEndOffsets[i - 1]`) records an appended component that
     /// flattened to nothing — `EmptyComponent`, a `nil` optional, an empty
-    /// composite. It contributes no atoms and no text, but it *does* count as
-    /// an element, so `isEmpty` and per-element containers observe it exactly
-    /// as the historical element tree did.
+    /// composite. It contributes no atoms and no text, and it is
+    /// container-layout bookkeeping only: per-element containers skip it (no
+    /// row, no separator), and no public measure observes it — `isEmpty`
+    /// reports components, matching `count`, `==`, `hash`, and `Codable`.
     ///
     /// **`atoms` never contains a zero-length component**, on any construction
     /// path. Tree flattening historically dropped empty atomics
@@ -69,6 +70,11 @@ extension SemanticString {
         var cachedString: String?
 
         /// The stripe this instance's cache fills serialize on.
+        ///
+        /// Computed, not stored, deliberately: the address mix is a few ALU
+        /// operations on a pointer already in a register, and storing the
+        /// stripe instead (an extra 8-byte field plus a dependent load per
+        /// `string` read) measured *slower*.
         ///
         /// All mutations other than the cache fill happen on
         /// uniquely-referenced storage (guarded by `makeUniqueForMutation`)

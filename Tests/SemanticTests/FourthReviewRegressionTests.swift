@@ -37,7 +37,11 @@ struct FourthReviewRegressionTests {
         )
         #expect(original.identifier(at: 5) == nil)
 
-        let encoded = try JSONEncoder().encode(original)
+        // Byte comparison requires deterministic key order — JSONEncoder's
+        // keyed containers do not guarantee one across invocations.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let encoded = try encoder.encode(original)
         let decoded = try JSONDecoder().decode(FrozenSemanticString.self, from: encoded)
 
         #expect(decoded == original)
@@ -46,7 +50,7 @@ struct FourthReviewRegressionTests {
         // Idempotent to the byte: re-encoding the decoded value reproduces the
         // same payload, so the index is preserved verbatim, exactly as the
         // unchecked init keeps it.
-        #expect(try JSONEncoder().encode(decoded) == encoded)
+        #expect(try encoder.encode(decoded) == encoded)
     }
 
     // MARK: F2 — equality/hashing normalize unknown type codes like every reader

@@ -207,19 +207,23 @@ struct ReviewFindingsRegressionTests {
         #expect(built._storage.cachedString == nil)
     }
 
-    @Test("Zero-output elements still count against isEmpty")
-    func zeroOutputElementsCountAgainstIsEmpty() {
-        // An element that flattens to nothing occupies an element slot, as it
-        // did in the historical element tree: `isEmpty` answers "are there no
-        // elements", `count == 0` answers "does this render nothing".
+    @Test("Zero-output elements keep their slot but do not affect isEmpty")
+    func zeroOutputElementsDoNotAffectIsEmpty() {
+        // An element that flattens to nothing occupies an element slot —
+        // container-layout bookkeeping — but `isEmpty` reports components
+        // (fifth review round, superseding the earlier element-count
+        // semantics): all emptiness measures coincide, and they agree with
+        // `==`/`hash`/`Codable`, which compare components.
         let zeroOutput = SemanticString {
             Group {}
             Group {}
         }
         #expect(zeroOutput._storage.elementCount == 2)
-        #expect(zeroOutput.isEmpty == false)
+        #expect(zeroOutput.isEmpty == true)
         #expect(zeroOutput.count == 0)
+        #expect(zeroOutput.first == nil)
         #expect(zeroOutput.string.isEmpty)
+        #expect(zeroOutput == SemanticString())
 
         #expect(SemanticString().isEmpty)
     }

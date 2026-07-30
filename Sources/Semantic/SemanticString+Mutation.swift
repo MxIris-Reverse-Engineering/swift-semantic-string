@@ -83,10 +83,28 @@ extension SemanticString {
     /// dynamic cast and no intermediate array. Reading `string` and `type`
     /// directly is sound *only* because conformance to
     /// `PlainAtomicSemanticComponent` states that `buildComponents()` would
-    /// have produced exactly this.
+    /// have produced exactly this — a promise the compiler cannot check, so
+    /// debug builds assert it: a conformance that overrides
+    /// `buildComponents()` fails loudly here instead of silently rendering
+    /// different content per construction path.
     @inlinable
     public mutating func append(_ component: some PlainAtomicSemanticComponent) {
+        assert(
+            Self.upholdsPlainAtomicPromise(component),
+            "\(type(of: component)) conforms to PlainAtomicSemanticComponent but overrides buildComponents(); the fast path would ignore the override. Conform to AtomicSemanticComponent only."
+        )
         appendAtomElement(AtomicComponent(string: component.string, type: component.type))
+    }
+
+    /// Debug-only check backing the assertion above. `true` when the leaf's
+    /// `buildComponents()` produces exactly what the fast path stores.
+    @usableFromInline
+    internal static func upholdsPlainAtomicPromise(_ component: some PlainAtomicSemanticComponent) -> Bool {
+        let built = component.buildComponents()
+        if component.string.isEmpty {
+            return built.isEmpty
+        }
+        return built == [AtomicComponent(string: component.string, type: component.type)]
     }
 
     /// Leaves that customize `buildComponents()`, and leaves reached through
@@ -104,15 +122,41 @@ extension SemanticString {
     /// `MemberList`-style containers render it as one row. A component that
     /// flattens to nothing (an appended `nil` optional, `EmptyComponent`, an
     /// empty composite) records a zero-length element: no atoms, no text, no
-    /// representation change, but it still counts against `isEmpty`, exactly
-    /// as it occupied an element slot in the historical element tree.
+    /// observable change — the slot is container-layout bookkeeping only and
+    /// does not affect `isEmpty`, which reports components.
     @inlinable
     public mutating func append(_ component: some SemanticStringComponent) {
         if let atomicComponent = component as? AtomicComponent {
             appendAtomElement(atomicComponent)
             return
         }
+        // A `SemanticString` reached as a component — every builder child is
+        // one — is one element, like any other component here. Its atoms
+        // already uphold the "no zero-length components" invariant, so they
+        // are appended in bulk instead of through the per-atom filter loop.
+        if let semanticString = component as? SemanticString {
+            appendSemanticStringElement(semanticString)
+            return
+        }
+        // No plain-leaf existential fast path here, deliberately: measured, a
+        // protocol-conformance cast per component costs more than the
+        // one-element array `buildComponents()` allocates. Statically typed
+        // appends already skip both.
         appendComponentElement(flattening: component.buildComponents())
+    }
+
+    /// Appends another string's contents as **one element**, in bulk.
+    ///
+    /// This is the existential-append counterpart of
+    /// `append(_ semanticString:)` below, which preserves the argument's own
+    /// element boundaries instead. Sound without filtering because storage
+    /// never holds zero-length atoms.
+    @usableFromInline
+    internal mutating func appendSemanticStringElement(_ semanticString: SemanticString) {
+        makeUniqueForMutation()
+        let appendedAtoms = semanticString._storage.atoms
+        _storage.atoms.append(contentsOf: appendedAtoms)
+        _storage.closeElement(appendedAtomCount: appendedAtoms.count)
     }
 
     /// Concatenates another string's contents, element boundaries included.

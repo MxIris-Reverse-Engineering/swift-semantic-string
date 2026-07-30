@@ -18,8 +18,13 @@ extension SemanticType {
     /// already owns. The decoder's `case 8 ... 17` would not have been
     /// updated, and nothing in the type system would have objected.
     /// `FrozenSemanticStringTests.typeCodeBijection` pins uniqueness and
-    /// round-tripping over `allCases`, so a future case cannot reintroduce
-    /// the collision without failing it.
+    /// round-tripping over an explicit case list — `TypeKind`/`Context`
+    /// combinations via `allCases`, top-level cases by hand (`SemanticType`
+    /// has associated values, so it cannot be `CaseIterable`). The hand list
+    /// is kept honest by a compile-time exhaustiveness canary in the same
+    /// file: adding a top-level case breaks the canary's `switch`, forcing
+    /// the list and the pinned count to be updated together, so a future
+    /// case cannot reintroduce a collision without failing the test.
     @inlinable
     public var frozenTypeCode: UInt8 {
         switch self {

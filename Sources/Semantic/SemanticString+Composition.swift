@@ -2,9 +2,12 @@
 
 extension SemanticString {
     /// A copy of `self` carrying no identifier scopes. Every `appending`
-    /// result starts here: the historical semantics of building a fresh
-    /// string is that open scopes on `self` never leak into the result —
-    /// including through early returns for empty input.
+    /// result that actually appends starts here: building a fresh string
+    /// never leaks open scopes on `self` into the result. Overloads that
+    /// append nothing (`appending("")`, a false `if:` condition) return
+    /// `self` unchanged instead — scopes included — matching the historical
+    /// early returns, so a streaming writer that probes with empty input
+    /// keeps its open scope.
     @inlinable
     internal func makingUnscopedCopy() -> SemanticString {
         var copy = self
@@ -51,9 +54,12 @@ extension SemanticString {
     ///
     /// Unlike the mutating `append(_:type:)`, this never stamps identifier
     /// scopes — the result is a fresh string and carries none. Appending an
-    /// empty string appends nothing, but the result still carries no scopes.
+    /// empty string returns `self` unchanged, open scopes included, matching
+    /// the historical early return: a streaming writer that appends empty
+    /// input must not lose the scope it is writing under.
     @inlinable
     public func appending(_ string: String, type: SemanticType = .standard) -> SemanticString {
+        guard !string.isEmpty else { return self }
         var copy = makingUnscopedCopy()
         copy.append(string, type: type)
         return copy

@@ -79,11 +79,14 @@ extension AtomicSemanticComponent {
 /// not call it, so an override would be silently ignored for values appended
 /// through `append` / `appending` / `+` / `+=` while still being honoured when
 /// the same value goes through a `@SemanticStringBuilder` — the same component
-/// producing different *content* depending on how it was assembled. Leaves
-/// that override `buildComponents()` conform to `AtomicSemanticComponent`
-/// only and take the correct, slightly slower path — which still records one
-/// element however many atoms the override produces. `AtomicComponent` is one
-/// such leaf: it overrides `buildComponents()` to carry `identifier` through.
+/// producing different *content* depending on how it was assembled. Debug
+/// builds assert the promise on every fast-path append, so a violating
+/// conformance fails the first test that streams it rather than shipping the
+/// divergence. Leaves that override `buildComponents()` conform to
+/// `AtomicSemanticComponent` only and take the correct, slightly slower
+/// path — which still records one element however many atoms the override
+/// produces. `AtomicComponent` is one such leaf: it overrides
+/// `buildComponents()` to carry `identifier` through.
 public protocol PlainAtomicSemanticComponent: AtomicSemanticComponent {}
 
 // MARK: - Convenience Extensions

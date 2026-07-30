@@ -28,11 +28,21 @@ struct ThirdReviewRegressionTests {
 
         #expect(appendedEmpty == handBuiltEmpty)
         #expect(appendedEmpty.hashValue == handBuiltEmpty.hashValue)
-        // Both record one zero-length element: equal values must not give
-        // opposite answers to `isEmpty`, or passing one through a Set/Dictionary
-        // key silently changes rendering decisions built on it.
-        #expect(appendedEmpty.isEmpty == false)
-        #expect(handBuiltEmpty.isEmpty == false)
+        // Equal values must not give opposite answers to `isEmpty`, or passing
+        // one through a Set/Dictionary key silently changes rendering
+        // decisions built on it. Since the fifth round `isEmpty` reports
+        // components — the measure `==` compares — so agreement holds by
+        // construction, including against a value that never saw the empty
+        // append at all.
+        #expect(appendedEmpty.isEmpty == true)
+        #expect(handBuiltEmpty.isEmpty == true)
+        #expect(appendedEmpty == SemanticString())
+        #expect(appendedEmpty.first == nil)
+        #expect(appendedEmpty.count == 0)
+        // The element slot itself is still recorded — container-layout
+        // bookkeeping, invisible to every public measure.
+        #expect(appendedEmpty._storage.elementCount == 1)
+        #expect(handBuiltEmpty._storage.elementCount == 1)
     }
 
     @Test("Hand-built arrays record one element per input component")
@@ -224,19 +234,20 @@ struct ThirdReviewRegressionTests {
         #expect(rowsOutput == "")
     }
 
-    // MARK: F9 — pinned: frozen isEmpty is render-emptiness
+    // MARK: F9 — pinned: freezing preserves isEmpty
 
     @Test("Freezing a zero-output-element value yields an empty snapshot")
     func freezingZeroOutputElementsYieldsEmptySnapshot() {
-        // `SemanticString.isEmpty` counts elements (a zero-output element
-        // occupies a slot); `FrozenSemanticString.isEmpty` is render-emptiness
-        // (no spans ⇔ no text on every validated value). The flip across
-        // `frozen()` is the same one a `Codable` round trip has always had —
-        // element slots are builder-side state that a snapshot does not carry.
+        // Since the fifth round both measures report "no components": the
+        // builder's element slot is layout bookkeeping that neither
+        // `SemanticString.isEmpty` nor the snapshot observes, so freezing
+        // preserves `isEmpty` — there is no longer a flip to pin, and that
+        // agreement is itself the regression guard.
         var value = SemanticString()
         value.append(EmptyComponent())
-        #expect(value.isEmpty == false)
+        #expect(value.isEmpty == true)
         #expect(value.frozen().isEmpty)
         #expect(value.frozen().string.isEmpty)
+        #expect(value.isEmpty == value.frozen().isEmpty)
     }
 }

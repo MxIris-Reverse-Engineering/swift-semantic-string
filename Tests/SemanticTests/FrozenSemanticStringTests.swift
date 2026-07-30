@@ -29,6 +29,10 @@ struct FrozenSemanticStringTests {
         }
     }
 
+    /// Every `SemanticType` value. `TypeKind`/`Context` combinations come
+    /// from `allCases`; the top-level cases are listed by hand because
+    /// `SemanticType` has associated values and cannot be `CaseIterable`.
+    /// `assertCaseListIsExhaustive(_:)` below keeps the hand list honest.
     private var allSemanticTypes: [SemanticType] {
         var types: [SemanticType] = [.standard, .comment, .keyword, .variable, .numeric, .argument, .error, .other]
         for typeKind in SemanticType.TypeKind.allCases {
@@ -41,6 +45,20 @@ struct FrozenSemanticStringTests {
             types.append(.function(context))
         }
         return types
+    }
+
+    /// Compile-time canary for `allSemanticTypes`: this `switch` must stay
+    /// exhaustive **without** a `default` clause. Adding a top-level case to
+    /// `SemanticType` fails compilation here, forcing `allSemanticTypes` and
+    /// `typeCodeBijection`'s pinned count to be updated together — the
+    /// mechanism that lets the bijection test actually catch a colliding
+    /// code for a future case.
+    private func assertCaseListIsExhaustive(_ semanticType: SemanticType) {
+        switch semanticType {
+        case .standard, .comment, .keyword, .variable, .numeric, .argument, .error, .other,
+             .type, .member, .function:
+            break
+        }
     }
 
     // MARK: - Freezing Equivalence
@@ -159,11 +177,14 @@ struct FrozenSemanticStringTests {
     func typeCodeBijection() {
         var seenCodes: Set<UInt8> = []
         for semanticType in allSemanticTypes {
+            assertCaseListIsExhaustive(semanticType)
             let code = semanticType.frozenTypeCode
             #expect(seenCodes.insert(code).inserted, "duplicate code \(code) for \(semanticType)")
             #expect(SemanticType(frozenTypeCode: code) == semanticType)
+            #expect(code < SemanticType.nextFreeFrozenTypeCode, "assigned code \(code) must stay below the next-free marker")
         }
-        #expect(seenCodes.count == 22)
+        #expect(seenCodes.count == allSemanticTypes.count, "every SemanticType value owns exactly one code")
+        #expect(seenCodes.count == 22, "update alongside allSemanticTypes when adding a case")
     }
 
     @Test("Unknown type codes decode to nil and render as .other")

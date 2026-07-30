@@ -117,34 +117,43 @@ struct RedesignRegressionTests {
         #expect(streamedRendering == builtRendering)
     }
 
-    // MARK: ForEach byte parity (finding 7)
+    // MARK: ForEach empty-item handling (finding 7, revised in the fifth round)
 
-    @Test("ForEach separator output matches main around empty items")
-    func forEachSeparatorMatchesMainAroundEmptyItems() {
+    @Test("ForEach skips empty items like every other separator container")
+    func forEachSkipsEmptyItemsLikeOtherContainers() {
+        // Deliberate divergence from main (which rendered "a, , b"): all
+        // separator containers — `Joined`, `Group`, and `ForEach` — skip
+        // items that render nothing, so no separator is emitted around
+        // nothing. Pinned alongside the equivalent `Joined`/`Group` behavior.
         let separated = SemanticString {
             ForEach(["a", "", "b"], separator: ", ") { item in
                 Standard(item)
             }
         }
-        #expect(separated.string == "a, , b")
+        #expect(separated.string == "a, b")
     }
 
-    @Test("ForEach separator output matches main for all-empty items")
-    func forEachSeparatorAllEmptyMatchesMain() {
+    @Test("ForEach over all-empty items renders nothing")
+    func forEachAllEmptyRendersNothing() {
         let separated = SemanticString {
             ForEach(["", ""], separator: ", ") { item in
                 Standard(item)
             }
         }
-        #expect(separated.string == ", ")
+        #expect(separated.string == "")
     }
 
-    // MARK: isEmpty semantics (decision D3)
+    // MARK: isEmpty semantics (decision D3, superseded in the fifth round)
 
-    @Test("A zero-output element still counts against isEmpty")
-    func builderEmptyStandardCountsAsElement() {
+    @Test("A zero-output element does not affect isEmpty")
+    func builderEmptyStandardDoesNotAffectIsEmpty() {
+        // D3 originally kept main's element-count semantics; the fifth review
+        // round replaced it with the component-count measure so that equal
+        // values agree on `isEmpty` (main's documented meaning: "has no
+        // components").
         let value = SemanticString { Standard("") }
-        #expect(value.isEmpty == false, "isEmpty means \"has no elements\", as on main")
+        #expect(value.isEmpty == true, "isEmpty means \"has no components\"")
+        #expect(value == SemanticString())
         #expect(SemanticString().isEmpty == true)
     }
 
@@ -185,13 +194,23 @@ struct RedesignRegressionTests {
 
     // MARK: Identifier scopes (findings 12, 13)
 
-    @Test("appending an empty string clears identifier scopes like every other appending")
-    func appendingEmptyStringClearsIdentifierScopes() {
+    @Test("appending an empty string returns self, open scopes included")
+    func appendingEmptyStringPreservesIdentifierScopes() {
+        // Revised in the fifth round to match main's early return: appending
+        // nothing is a no-op, and a no-op must not strip the scope a
+        // streaming writer is still writing under. Only overloads that
+        // actually append return an unscoped fresh string — pinned by
+        // `identifierScopesStampOnlyStringAppends` below and the non-empty
+        // case here.
         var source = SemanticString()
         source.pushIdentifierScope("Foo")
         var viaEmpty = source.appending("", type: .standard)
         viaEmpty.append("streamed", type: .standard)
-        #expect(viaEmpty.components.map(\.identifier) == [nil], "the result of appending carries no scopes from self")
+        #expect(viaEmpty.components.map(\.identifier) == ["Foo"], "a no-op appending keeps self's open scopes")
+
+        var viaNonEmpty = source.appending("x", type: .standard)
+        viaNonEmpty.append("streamed", type: .standard)
+        #expect(viaNonEmpty.components.map(\.identifier) == [nil, nil], "an actual appending carries no scopes from self")
     }
 
     @Test("Identifier scopes stamp string appends only")

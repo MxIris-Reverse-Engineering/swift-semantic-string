@@ -1,11 +1,19 @@
 // MARK: - Transformation
 
 extension SemanticString {
+    /// Returns a new semantic string with every component transformed.
+    ///
+    /// A component mapped to an empty string is **dropped** — storage never
+    /// holds zero-length components — so the result's `count` shrinks and
+    /// indices shift while `string` is unchanged. Callers that need the
+    /// component to survive should map to a placeholder instead of `""`.
     @inlinable
     public func map(_ modifier: (AtomicComponent) -> AtomicComponent) -> SemanticString {
         SemanticString(components: components.map(modifier))
     }
 
+    /// Returns a new semantic string with every component's type transformed.
+    /// Strings are preserved, so the component count is too.
     @inlinable
     public func replacing(_ transform: (SemanticType) -> SemanticType) -> SemanticString {
         map { AtomicComponent(string: $0.string, type: transform($0.type), identifier: $0.identifier) }
