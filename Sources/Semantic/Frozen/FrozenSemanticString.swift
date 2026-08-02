@@ -146,11 +146,28 @@ extension FrozenSemanticString {
     /// from a future encoder) resolve to `.other` rather than crashing.
     ///
     /// Advances one span boundary, enforcing the unchecked initializer's
-    /// invariants with diagnostics that name this type: a span that overruns
-    /// the text and a boundary inside a multi-byte scalar both trap here,
-    /// instead of dying in bare standard-library index arithmetic.
+    /// invariants with diagnostics that name this type: a zero-length span, a
+    /// span that overruns the text, and a boundary inside a multi-byte scalar
+    /// all trap here, instead of dying in bare standard-library index
+    /// arithmetic or, in the zero-length case, walking through silently.
+    ///
+    /// The zero-length guard is `precondition`, not `assert`, for the same
+    /// reason as the others: it is the only thing standing between a value
+    /// built by the unchecked initializer and a reader, in release as well as
+    /// debug. `Codable` decoding has rejected zero-length spans all along —
+    /// the two construction paths now agree about the same invariant.
     @usableFromInline
     internal func spanUpperBound(after lowerBound: String.Index, spanLength: UInt16) -> String.Index {
+        // A zero-length span renders nothing while still counting, so it
+        // would make `count > 0` coexist with `isEmpty == true`'s meaning,
+        // and `components` would hand out the empty `AtomicComponent` that
+        // storage, flattening, freezing, and the decoder all forbid —
+        // converting such a value to a `SemanticString` drops the span, so
+        // the round trip would not be idempotent.
+        precondition(
+            spanLength > 0,
+            "FrozenSemanticString has a zero-length span; the unchecked init's invariants were violated"
+        )
         let utf8View = text.utf8
         guard let upperBound = utf8View.index(lowerBound, offsetBy: Int(spanLength), limitedBy: utf8View.endIndex) else {
             preconditionFailure("FrozenSemanticString spans overrun the text; the unchecked init's invariants were violated")
@@ -163,12 +180,12 @@ extension FrozenSemanticString {
     }
 
     /// This is where the unchecked initializer's invariants are enforced, in
-    /// every direction: spans that overrun the text, spans that undercover
-    /// it, and a boundary inside a multi-byte scalar all trap with a
-    /// diagnostic naming this type — a deliberate loud failure, because
-    /// silently truncating or mis-slicing the value would be far harder to
-    /// debug. The `==` resolving path walks the same way and traps the same
-    /// way; `hash(into:)` does not walk the text and never traps.
+    /// every direction: zero-length spans, spans that overrun the text, spans
+    /// that undercover it, and a boundary inside a multi-byte scalar all trap
+    /// with a diagnostic naming this type — a deliberate loud failure,
+    /// because silently truncating or mis-slicing the value would be far
+    /// harder to debug. The `==` resolving path walks the same way and traps
+    /// the same way; `hash(into:)` does not walk the text and never traps.
     @inlinable
     public func enumerateSpans(_ body: (_ spanText: Substring, _ type: SemanticType, _ identifier: String?) -> Void) {
         var lowerBound = text.startIndex

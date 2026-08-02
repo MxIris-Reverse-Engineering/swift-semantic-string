@@ -71,15 +71,42 @@ debug 下 30 万次 append，PR 内部对照：
 - 依赖「协议文档承诺 debug 断言会挡住违约实现」的第三方实现者，现在能从文档读到真实保证强度。
 - 依赖延迟解析模式（先搭结构、后填名字/地址）的使用方，现在能从 README 读到该模式已失效及其替代写法。
 
+## 第二批：正确性修复
+
+### 零长 span 在读取路径全部变响
+
+unchecked init 的契约列了四条不变量并承诺「违反者在每个走文本的读取中 trap」。第三轮补齐的是**三**向——覆盖超出、覆盖不足、标量未对齐——**零长这一向漏了**，而它写在同一句话里。后果实测：
+
+- `isEmpty == false` 与 `text.isEmpty == true` 并存；
+- `enumerateSpans` 安静吐出一个空 `Substring`；
+- `components` 造出 `AtomicComponent(string: "")`——存储、展平、冻结、解码器全都禁止的东西；
+- 交错形态（text `"ab"`、spans `[1, 0, 1]`）`components` 返回 `["a", "", "b"]`，`SemanticString(components:)` 丢掉空项，重建值再冻结**不再等于原值**；
+- 该值自己编码出来的载荷，喂回自己的解码器被拒收。
+
+**解码器一直在校验零长**（第三轮引入，其注释论证的理由与上述现象完全一致），所以同一条不变量，解码路径拒收、构造+读取路径放行——两个入口互相矛盾。
+
+修复落在 `spanUpperBound(after:spanLength:)`：这是第五轮引入的共用 helper，`enumerateSpans`、`components`（经 enumerateSpans）、`==` 慢路径三个消费点全部经过它，**一处加 `precondition` 覆盖整类**。横向排查确认没有第四个走文本的遍历点：`hash(into:)` 与 `==` 快路径按设计不走文本（第五轮的既定决策，畸形值哈希不得崩溃），保持安静；编码侧只 map 字段。
+
+用 `precondition` 而非 `assert`，与既有三向一致——它是 release 下唯一挡住 unchecked init 坏值的守卫（第五轮结论），release 全套测试确认 trap 生效。
+
+### `ConcurrencyTests` 补上它自称拥有的覆盖
+
+两处注释描述了套件并不具备的覆盖，而 `AGENTS.md` 把「该套件 TSan 跑绿」定为改存储/加锁的准入门槛：
+
+1. 注释称 `appending`/`+`/`+=`「经存在类型回退进入泛型 append 重载」。实际四个分支用的全是 `Keyword`（`PlainAtomicSemanticComponent`，静态派发到 plain 重载）与 `SemanticString`（自己的重载）。**泛型 `append(_:some SemanticStringComponent)` 漏斗零并发覆盖**——而这正是每个 builder 子项的必经之路，也是做两次 `as?` 转换的那条。补两个测试：一个用 composite（两次转换都落空、走急切展平），一个经未特化泛型参数（静态类型只剩 `some SemanticStringComponent`，叶子也被迫走这里）。
+2. 注释称 `frozen()`「读两个缓存……冻结冷值会同时 race 两次填充」。`frozen()` **一次填充都不做**（用只读的 `cachedStringIfPresent()`，冷时本地拼接不发布），`StorageCacheRegressionTests.frozenDoesNotFillTheSourceCache` 正是钉这个的——该测试 race 的是零次填充。注释改为实话，并补一个真正 race 那唯一一次填充的测试：一半任务读 `string`（在条带锁下发布缓存），一半任务 `frozen()`（读同一字段），要么看到已发布值要么自算，不得撕裂。
+
 ## 未完成（后续批次）
 
-代码修复尚未落地，按优先级：
-
-1. **真缺陷**：`FrozenSemanticString` 零长 span 绕过全部 trap 并制造空 `AtomicComponent`（第三轮补的「三向全部变响」不含零长这一向，解码器却校验它，两侧不一致）；`ConcurrencyTests` 两处注释描述了套件并不具备的覆盖，而 `AGENTS.md` 把该套件 TSan 跑绿定为改存储的准入门槛。
-2. **性能**：`makingUnscopedCopy()` 使 `appending`/`+` 永远无法走就地分支（实测 1.65×，**且是第一轮明确修过、被第二轮重设计冲掉的回归**）；`closeElement` 的整表物化；`SemanticStringElements.init(_:[some SemanticStringComponent])` 漏 `reserveCapacity`（构造实测 10.5×，构造+渲染持平）；plain-leaf 断言的 debug 开销。
-3. **可选加固**：`CacheLockStripes.stride` 硬编码 128，改为 `max(128, 按 cache line 向上取整的 primitive stride)` 可把运行时 trap 变为编译期恒成立。
+1. **性能**：`makingUnscopedCopy()` 使 `appending`/`+` 永远无法走就地分支（实测 1.65×，**且是第一轮明确修过、被第二轮重设计冲掉的回归**）；`closeElement` 的整表物化；`SemanticStringElements.init(_:[some SemanticStringComponent])` 漏 `reserveCapacity`（构造实测 10.5×，构造+渲染持平）；plain-leaf 断言的 debug 开销。
+2. **可选加固**：`CacheLockStripes.stride` 硬编码 128，改为 `max(128, 按 cache line 向上取整的 primitive stride)` 可把运行时 trap 变为编译期恒成立。
 
 ## 验证
 
-- 本批改动为纯文档/注释，`swift build` 通过，无测试变更。
+- 第一批为纯文档/注释，无行为变更。
+- 第二批：新增 `SeventhReviewRegressionTests`（6 项）。四项 trap 测试**先行确认为红**——修复前畸形值静默正常退出（`.failure → .exitCode(0)`），修复后转绿；两项为对照（`hash` 必须保持安静、良构值不受影响），全程为绿。
+- `swift test`（debug）：**385 项 / 55 套件**全绿。
+- `swift test -c release -Xswiftc -enable-testing`：384 项全绿（少的一项是 `#if DEBUG` 守卫的断言测试）——确认零长守卫在 `-O` 下依然生效。
+- `swift test --sanitize=thread --filter ConcurrencyTests`：19 项全绿，**零竞争报告**。
+- `arm64_32-apple-watchos6.0` 交叉编译通过。
 - 文中每个数字均来自本轮双二进制实测，驱动程序为一次性探针（未入库）；`main` 侧对照数据见各节。

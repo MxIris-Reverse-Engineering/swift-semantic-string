@@ -228,9 +228,16 @@ struct ConcurrencyTests {
 
     @Test("Concurrent appending operators leave the shared value alone")
     func concurrentAppendingOperatorsAreIsolated() async {
-        // `appending(_:)`, `+`, and `+=` all copy first. They also route
-        // components through the existential fallback in the generic `append`
-        // overload, so they exercise a different entry point than `append`.
+        // `appending(_:)`, `+`, and `+=` all copy first, so a shared value
+        // must be unaffected by what any of them produce.
+        //
+        // Note which overloads these actually reach: `Keyword` is a
+        // `PlainAtomicSemanticComponent`, so `appending(Keyword(…))` resolves
+        // statically to the plain-leaf overload, and the operands built from
+        // `SemanticString` reach the `SemanticString` overload. None of them
+        // touches the generic `append(_ component: some SemanticStringComponent)`
+        // funnel — that entry point is covered separately by
+        // `concurrentAppendingThroughTheGenericFunnelIsIsolated` below.
         let (expectedComponents, expectedString) = expectedComponentsAndString()
 
         for _ in 0 ..< Self.roundCount {
@@ -251,6 +258,83 @@ struct ConcurrencyTests {
                             accumulator += Keyword("tail")
                             return accumulator.string == expectedString + "tail"
                         }
+                    }
+                }
+                for await isConsistent in group {
+                    #expect(isConsistent)
+                }
+            }
+
+            #expect(shared.components == expectedComponents)
+        }
+    }
+
+    /// The generic `append(_ component: some SemanticStringComponent)` funnel
+    /// — the entry point every `@SemanticStringBuilder` child goes through,
+    /// and the one that performs the `as? AtomicComponent` / `as? SemanticString`
+    /// casts before falling back to eager flattening. Reaching it requires a
+    /// component whose static type is *not* a plain leaf, an `AtomicComponent`,
+    /// or a `SemanticString`; a composite does that.
+    ///
+    /// Added in the seventh round: the suite documented this coverage but did
+    /// not have it, and `AGENTS.md` makes a clean ThreadSanitizer run of this
+    /// suite the gate for storage and locking changes.
+    @Test("Concurrent appends through the generic funnel leave the shared value alone")
+    func concurrentAppendingThroughTheGenericFunnelIsIsolated() async {
+        let (expectedComponents, expectedString) = expectedComponentsAndString()
+
+        for _ in 0 ..< Self.roundCount {
+            let shared = nestedString()
+
+            await withTaskGroup(of: Bool.self) { group in
+                for taskIndex in 0 ..< Self.taskCount {
+                    group.addTask {
+                        // A composite: neither an `AtomicComponent`, nor a
+                        // `SemanticString`, nor a plain leaf, so both casts in
+                        // the funnel miss and the component is flattened.
+                        let composite = Group([
+                            SemanticString(Keyword("tail")),
+                            SemanticString(Standard("\(taskIndex)")),
+                        ])
+                        var accumulator = shared
+                        accumulator.append(composite)
+                        return accumulator.string == expectedString + "tail\(taskIndex)"
+                    }
+                }
+                for await isConsistent in group {
+                    #expect(isConsistent)
+                }
+            }
+
+            #expect(shared.components == expectedComponents)
+            #expect(shared.string == expectedString)
+        }
+    }
+
+    /// The same funnel reached through an unspecialized generic parameter,
+    /// where the caller's static type is only `some SemanticStringComponent`.
+    /// A leaf that would otherwise resolve statically to the plain-leaf
+    /// overload arrives here instead.
+    @Test("Concurrent appends through an unspecialized generic leave the shared value alone")
+    func concurrentAppendingThroughUnspecializedGenericIsIsolated() async {
+        func appendThroughGeneric<Component: SemanticStringComponent>(
+            _ component: Component,
+            into target: inout SemanticString
+        ) {
+            target.append(component)
+        }
+
+        let (expectedComponents, expectedString) = expectedComponentsAndString()
+
+        for _ in 0 ..< Self.roundCount {
+            let shared = nestedString()
+
+            await withTaskGroup(of: Bool.self) { group in
+                for taskIndex in 0 ..< Self.taskCount {
+                    group.addTask {
+                        var accumulator = shared
+                        appendThroughGeneric(Keyword("tail\(taskIndex)"), into: &accumulator)
+                        return accumulator.string == expectedString + "tail\(taskIndex)"
                     }
                 }
                 for await isConsistent in group {
@@ -422,9 +506,15 @@ struct ConcurrencyTests {
 
     @Test("Concurrent freezing of a shared value produces identical snapshots")
     func concurrentFreezingProducesIdenticalSnapshots() async {
-        // `frozen()` reads both caches — `components` for the spans and
-        // `string` for the text arena — so freezing a cold shared value races
-        // two fills at once.
+        // `frozen()` fills nothing. It reads the atoms directly for the spans
+        // and takes the text from `cachedStringIfPresent()`, concatenating
+        // locally when the cache is cold rather than publishing the result —
+        // `StorageCacheRegressionTests.frozenDoesNotFillTheSourceCache` pins
+        // exactly that. So what races here is concurrent *reading* of shared
+        // storage with no fill at all, which is the weaker guarantee and
+        // still worth holding: every task must derive an identical snapshot.
+        // Freezing concurrently with a cold-cache `string` read is the case
+        // that actually races a fill, covered below.
         for _ in 0 ..< Self.roundCount {
             let shared = nestedString()
             let expectedFrozen = nestedString().frozen()
@@ -446,6 +536,43 @@ struct ConcurrencyTests {
                     #expect(isConsistent)
                 }
             }
+        }
+    }
+
+    /// Freezing raced against the one fill that actually exists. A cold
+    /// `string` read publishes `cachedString` under its stripe; `frozen()`
+    /// reads the same field through `cachedStringIfPresent()` and must either
+    /// see the published value or compute its own — never a torn one.
+    ///
+    /// Added in the seventh round, to replace a comment that claimed
+    /// `frozen()` raced two cache fills. It fills none, so the test above
+    /// raced zero; this one races the real thing.
+    @Test("Freezing races a concurrent cold-cache string fill safely")
+    func concurrentFreezingRacesTheStringCacheFill() async {
+        for _ in 0 ..< Self.roundCount {
+            let shared = nestedString()
+            let expectedString = nestedString().string
+            let expectedFrozen = nestedString().frozen()
+
+            await withTaskGroup(of: Bool.self) { group in
+                for taskIndex in 0 ..< Self.taskCount {
+                    group.addTask {
+                        if taskIndex.isMultiple(of: 2) {
+                            // Fills the cache under the stripe lock.
+                            return shared.string == expectedString
+                        } else {
+                            // Reads it without filling; must not tear.
+                            let frozen = shared.frozen()
+                            return frozen.text == expectedString && frozen == expectedFrozen
+                        }
+                    }
+                }
+                for await isConsistent in group {
+                    #expect(isConsistent)
+                }
+            }
+
+            #expect(shared.frozen() == expectedFrozen)
         }
     }
 
