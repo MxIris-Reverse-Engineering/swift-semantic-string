@@ -293,6 +293,30 @@ This holds on every construction path — hand-built arrays, streamed appends, d
 
 Empty atoms contribute no text directly, and container *emptiness* decisions see the filtered form: an item or element consisting only of empty atoms produces no row in `MemberList`/`Rows`/`BlockList`, no separator in `Group`/`Joined`/`ForEach`, and no braces content in `DeclarationBlock`. This unifies two shapes that historically behaved differently — `Keyword("")` (whose default `buildComponents()` returns nothing) was always skipped, while a custom component emitting one empty atom was rendered as an empty row. Both now flatten to the same nothing and get the same treatment.
 
+### Components are flattened when they are appended
+
+A component's `buildComponents()` runs at the moment the component is appended or placed in a container — not when the result is rendered. Its output is copied into storage and the component itself is released. `buildComponents()` takes no context and is expected to be deterministic, so the flattening can only ever be done once, and doing it eagerly keeps every read path free of side effects.
+
+This matters if a custom component reads mutable state that is resolved *after* assembly — a deferred-resolution pattern where a printer builds the structure first and fills in names, offsets, or addresses afterwards:
+
+```swift
+final class LateBoundName { var value = "placeholder" }
+
+struct NameReference: SemanticStringComponent {
+    let holder: LateBoundName
+    func buildComponents() -> [AtomicComponent] {
+        [AtomicComponent(string: holder.value, type: .standard)]
+    }
+}
+
+let holder = LateBoundName()
+let group = Group([SemanticString(NameReference(holder: holder))])
+holder.value = "resolved"
+SemanticString(group).string   // "placeholder" — captured at append time
+```
+
+The element-tree storage retained the component and called `buildComponents()` at render time, so the same code produced `"resolved"`. Resolve such values **before** appending them, or store a `SemanticString` placeholder and rebuild the container once the value is known.
+
 ## Read-Only Content: `FrozenSemanticString`
 
 `SemanticString` is the *builder* — composable, streamable, mutable. When a string is fully built and will only ever be read (rendered, encoded, exported, searched), freeze it:

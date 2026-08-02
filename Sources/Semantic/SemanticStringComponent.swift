@@ -79,10 +79,20 @@ extension AtomicSemanticComponent {
 /// not call it, so an override would be silently ignored for values appended
 /// through `append` / `appending` / `+` / `+=` while still being honoured when
 /// the same value goes through a `@SemanticStringBuilder` — the same component
-/// producing different *content* depending on how it was assembled. Debug
-/// builds assert the promise on every fast-path append, so a violating
-/// conformance fails the first test that streams it rather than shipping the
-/// divergence. Leaves that override `buildComponents()` conform to
+/// producing different *content* depending on how it was assembled. The two
+/// results then compare unequal and hash differently, so a `Set` or a
+/// dictionary key holds both.
+///
+/// **Nothing enforces this in release.** Debug builds assert the promise on
+/// every fast-path append, but `assert` is compiled out under `-O`: a
+/// violating conformance built for release ships the divergence silently,
+/// with no diagnostic and no crash. The assertion is a development aid that
+/// fires only if a debug build happens to stream that particular leaf — it is
+/// not a guarantee, and a conformance that is only ever exercised in release
+/// is never checked at all. Treat the promise as a contract you uphold, not
+/// one the library verifies for you.
+///
+/// Leaves that override `buildComponents()` conform to
 /// `AtomicSemanticComponent` only and take the correct, slightly slower
 /// path — which still records one element however many atoms the override
 /// produces. `AtomicComponent` is one such leaf: it overrides
