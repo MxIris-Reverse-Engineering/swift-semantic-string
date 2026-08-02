@@ -16,6 +16,11 @@
 - [FourthReviewFixes.md](FourthReviewFixes.md) —— 第四轮评审后的两处 `FrozenSemanticString` 一致性修正：解码器不再拒收越界 `identifierIndex`（原样保留、读取归 nil，与 unchecked init 承诺及「解码保留未知 typeCode」对称，Codable 往返恢复逐字节幂等）；`==`/`hash` 比较**归一后**的 `SemanticType` 而非原始 `typeCode` 字节（两个都渲染为 `.other` 的快照恢复判等）。同源于「读者当降级、另一路径当原始字节」的字段处理不一致。
 - [FifthReviewFixes.md](FifthReviewFixes.md) —— 第五轮评审（15 处，独立复现全部属实）后的收口：`isEmpty` 改为组件计数使全部空判度量重合（相等值不再对 `isEmpty` 给出相反答案，`ForEach` 随之与其它分隔容器一致跳过空项）；`appending("")` 恢复保留 identifier scope 的 early return；Frozen `==` 快路径加字节相等门槛（canonical 重排不再误判相等）、`hash` 不再走文本（50 万 span 值 hash -62%、Set 插入 -65%，畸形值哈希不再崩溃）、`==` 慢路径与 `enumerateSpans` 共用带名诊断；flaky 的逐字节 Codable 断言补 `.sortedKeys`；`typeCodeBijection` 增加编译期穷尽性哨兵；「分配数守卫」「span 不切分 Character」「identifier index 越界校验」「解码器资源上界」四处失实文档全部改为实话。
 - [SixthReviewFixes.md](SixthReviewFixes.md) —— 合并前验证轮：对第五轮后分支的 15 项评审发现逐条独立复现（12 属实、2 定性误报、1 细节失实），并与 `main` 对照定位回归来源。修复：零宽 append 改为完全 no-op（不再丢缓存、不再物化边界表）、Frozen `==` 慢路径补 undercover trap、`DeclarationBlock` 识别 CRLF 结尾的 body、release 模式测试守卫；变异测试驱动补上两条核心存储不变量（边界拼接、零长过滤）的容器渲染 pin。元素边界经 `Codable` 往返坍缩确认为 `main` 固有问题，单开 issue 跟踪。
+- [SeventhReviewFixes.md](SeventhReviewFixes.md) —— 第七轮：对 15 项发现逐条走完「四问」核验（能否复现 / `main` 是否也有 / 值不值得修 / 以前是否修过），全部属实——7 项待修、5 项前几轮已裁决、1 项 `main` 固有、1 项可选加固。本批只落地文档诚实化：`PlainAtomicSemanticComponent` 协议文档改为实话（`assert` 在 `-O` 下被编译掉，违约实现在 release 静默发布内容分叉）、AGENTS.md 三处（零长槽说法与第六轮自相矛盾、边界表物化的永久代价、被实测证伪的「粒度不可能在路径间分叉」）、README 补「组件在 append 时展平」的迁移说明。代码修复分批进行，未完成项在文末列明。
+
+## 已裁决清单
+
+- [SettledFindings.md](SettledFindings.md) —— 被判定为**有意偏离 / 有意不修 / 误报**的发现及其理由。**每次 code-review 先对照此清单**：命中且理由仍成立的直接跳过，不再重走四问；若新证据推翻理由，则更新该条并重新裁决。第七轮 15 项中有 5 项属重复报告，正是此前缺少这份清单所致。
 
 ## 约定
 
