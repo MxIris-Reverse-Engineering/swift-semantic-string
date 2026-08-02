@@ -18,6 +18,8 @@
 - [SixthReviewFixes.md](SixthReviewFixes.md) —— 合并前验证轮：对第五轮后分支的 15 项评审发现逐条独立复现（12 属实、2 定性误报、1 细节失实），并与 `main` 对照定位回归来源。修复：零宽 append 改为完全 no-op（不再丢缓存、不再物化边界表）、Frozen `==` 慢路径补 undercover trap、`DeclarationBlock` 识别 CRLF 结尾的 body、release 模式测试守卫；变异测试驱动补上两条核心存储不变量（边界拼接、零长过滤）的容器渲染 pin。元素边界经 `Codable` 往返坍缩确认为 `main` 固有问题，单开 issue 跟踪。
 - [SeventhReviewFixes.md](SeventhReviewFixes.md) —— 第七轮：对 15 项发现逐条走完「四问」核验（能否复现 / `main` 是否也有 / 值不值得修 / 以前是否修过），全部属实——7 项待修、5 项前几轮已裁决、1 项 `main` 固有、1 项可选加固。本批只落地文档诚实化：`PlainAtomicSemanticComponent` 协议文档改为实话（`assert` 在 `-O` 下被编译掉，违约实现在 release 静默发布内容分叉）、AGENTS.md 三处（零长槽说法与第六轮自相矛盾、边界表物化的永久代价、被实测证伪的「粒度不可能在路径间分叉」）、README 补「组件在 append 时展平」的迁移说明。第二批为正确性修复：`FrozenSemanticString` 零长 span 在读取路径全部变响（第三轮补的「三向」漏了这一向，而解码器一直在校验它，两个入口互相矛盾；修在三个消费点共用的 `spanUpperBound` 上，一处覆盖整类），`ConcurrencyTests` 补上它自称拥有却缺失的覆盖（泛型 append 漏斗、真正 race 缓存填充的冻结）。性能修复与可选加固在文末列明。
 
+- [EighthReviewFindings.md](EighthReviewFindings.md) —— 第八轮：又一轮 15 项发现的四问核验。**该轮评审读的是陈旧引用 `4bf98e3`，而分支实际 head 是 `2b07c0a`**，因此 5 项评的是已修代码、2 项评的是第七轮刚写下的裁决。核验在本地 tip 上重做：7 项待修（元素切片双索引基准、`components` 时间界在 release 下失效、32 位条带散列测试无效、`#if` 链缺 `#else #error`、`appendMatrix` 的四种组合实为一种、条件组合子文档失实、`-Ounchecked` 下 10 项 exit test 转红），1 项**误报**（冷内存回归，三组独立测量方向相反），其余为已修或已裁决。含三个测试的变异测试结果——注入它们各自声称能抓的回归后仍然全绿。
+
 ## 已裁决清单
 
 - [SettledFindings.md](SettledFindings.md) —— 被判定为**有意偏离 / 有意不修 / 误报**的发现及其理由。**每次 code-review 先对照此清单**：命中且理由仍成立的直接跳过，不再重走四问；若新证据推翻理由，则更新该条并重新裁决。第七轮 15 项中有 5 项属重复报告，正是此前缺少这份清单所致。
