@@ -96,10 +96,41 @@ unchecked init 的契约列了四条不变量并承诺「违反者在每个走�
 1. 注释称 `appending`/`+`/`+=`「经存在类型回退进入泛型 append 重载」。实际四个分支用的全是 `Keyword`（`PlainAtomicSemanticComponent`，静态派发到 plain 重载）与 `SemanticString`（自己的重载）。**泛型 `append(_:some SemanticStringComponent)` 漏斗零并发覆盖**——而这正是每个 builder 子项的必经之路，也是做两次 `as?` 转换的那条。补两个测试：一个用 composite（两次转换都落空、走急切展平），一个经未特化泛型参数（静态类型只剩 `some SemanticStringComponent`，叶子也被迫走这里）。
 2. 注释称 `frozen()`「读两个缓存……冻结冷值会同时 race 两次填充」。`frozen()` **一次填充都不做**（用只读的 `cachedStringIfPresent()`，冷时本地拼接不发布），`StorageCacheRegressionTests.frozenDoesNotFillTheSourceCache` 正是钉这个的——该测试 race 的是零次填充。注释改为实话，并补一个真正 race 那唯一一次填充的测试：一半任务读 `string`（在条带锁下发布缓存），一半任务 `frozen()`（读同一字段），要么看到已发布值要么自算，不得撕裂。
 
+## 第三批：性能与加固
+
+### `appending` / `+` 改为 `consuming`——以及一处对自己的结论纠正
+
+**初判有误，实测推翻。** 本轮最初把它判为「第一轮明确修过、被第二轮重设计冲掉的回归」，依据是第一轮修复文档删掉的正是 `var copy = self` 这个模式，而第二轮重设计把它写了回来。逐项实测后这个因果站不住：
+
+| 写法 | `main` | 本分支（borrowing） | 本分支（`consuming`） |
+| --- | --- | --- | --- |
+| `acc = acc + piece`（4000 次） | 42.3 ms | 75.8 ms | 76.8 ms |
+| `acc = (consume acc) + piece` | — | 75.1 ms | **0.2 ms** |
+| `acc += piece`（就地下界） | — | 0.2 ms | 0.2 ms |
+
+默认累加写法在改动前后**都是约 76 ms**——`consuming` 对它毫无影响。原因是 `acc` 是赋值目标，右值求值期间它仍是活的变量绑定，编译器无从证明可以转移所有权。与 `main` 的 1.65× 差距因此**不是**那个模式造成的，而是元素本身变大的固有代价：`main` 复制的是每元素一个装箱指针（8 字节、1 次引用计数操作），本分支复制的是 `AtomicComponent`（40 字节、2 次——`string` 与 `identifier` 各一次）。第一轮真正修掉的是**额外的** `Storage` 复制（当时还会加锁并复制两个缓存字段），那个修复至今有效，`Storage(copyingContentsOf:)` 就是它。
+
+`consuming` 仍然保留，因为它启用了两条此前**不存在**的路径——注意上表：原版即使写显式 `consume` 也是 75.1 ms，因为参数是 borrowing，函数内 `var copy = self` 照样 retain。改动后：
+
+- **链式 `appending`**（`a.appending(x).appending(y)…`，常见写法）：13.7 ms → **7.7 ms（1.78×）**，中间临时值的所有权被正确转移；
+- **显式 `consume` 的累加循环**：75.1 ms → **0.2 ms**，与就地路径持平，调用方现在有办法把 O(n²) 降为摊销 O(1)；
+- **仍需复用原值的场景**：2.8 ms → 2.9 ms，编译器按需插回拷贝，语义与性能都不变。
+
+结论：这是一项**能力增补**，不是回归修复。默认累加写法的 O(n²) 是 `appending` 值语义的固有成本（`main` 同样是 O(n²)，只是常数小），文档不应再暗示它可以被消除。
+
+### 其余三项
+
+- **`SemanticStringElements.init(_:[some SemanticStringComponent])` 补 `atoms.reserveCapacity`**：此前只给边界表预留、给接收全部原子的数组不留，10k 行要走约 18 次几何重分配。构造 5000×300：63.2 ms → 59.7 ms。**注意本项收益有限**——该初始化器与 `main` 的差距主体是急切展平本身的原子拷贝，不是重分配次数；且「构造+渲染」两侧本就持平，慢的只有「构造完即丢弃」这一种用法。
+- **plain-leaf 断言只读一次 `string`、按字段比较**：省掉两次多余的 `string` 读取（对 `Indent` 是三次 `String(repeating:)` 分配）和一个一次性比较数组。debug 30 万次 append：149.7 ms → 140.9 ms（约 6%）。**主成本无法消除**：验证 `buildComponents()` 的返回值就必须调用它，那次数组分配是不可约的，所以这条路径在 debug 下依然比无断言的 `append(_:type:)`（76.9 ms）慢。断言的定位因此仍是开发辅助，不是零成本保证。
+- **`CacheLockStripes.stride` 由推导代替硬编码**：改为 `max(128, ≥ primitive stride 的最小 2 的幂)`。原先是硬编码 128 加一个运行时 `precondition`，而该 `precondition` 位于惰性 `static let` 内——真出问题会在进程首次 `SemanticString.string` 读取时炸在 `swift_once` 里，而非构建期；`-Ounchecked` 下它被整个移除，相邻条带重叠、互斥静默消失。推导之后两种结局都不可达。用翻倍而非「向上取整到 128 的倍数」，是因为 `allocate(byteCount:alignment:)` 要求对齐是 2 的幂——384 是合法的 cache line 倍数，却是非法的对齐值。
+
 ## 未完成（后续批次）
 
-1. **性能**：`makingUnscopedCopy()` 使 `appending`/`+` 永远无法走就地分支（实测 1.65×，**且是第一轮明确修过、被第二轮重设计冲掉的回归**）；`closeElement` 的整表物化；`SemanticStringElements.init(_:[some SemanticStringComponent])` 漏 `reserveCapacity`（构造实测 10.5×，构造+渲染持平）；plain-leaf 断言的 debug 开销。
-2. **可选加固**：`CacheLockStripes.stride` 硬编码 128，改为 `max(128, 按 cache line 向上取整的 primitive stride)` 可把运行时 trap 变为编译期恒成立。
+**边界表的整表物化（`closeElement`）** 未修，是本轮唯一有意留下的代码项。方案已经设计好：把 `elementEndOffsets: [Int]?` 换成 `implicitPrefixCount: Int` + `explicitEndOffsets: [Int]`，「前 N 个原子各自一个元素」退化为一个整数，`Array(1 ... previousAtomCount)` 随之消失，纯流式字符串的表示不变（`implicitPrefixCount == atoms.count` 且 `explicitEndOffsets` 为空）。
+
+单独成批的理由：它是全部发现里唯一需要改动核心数据结构的一项，波及 `Storage` 的 7 个方法、`SemanticStringElements.atoms(ofElementAt:)`（所有容器渲染的热路径）、`SemanticString` 的 4 处，以及 6 个直接断言 `_storage.elementEndOffsets` 的测试文件——那些断言是有意钉住存储设计的，改写时的理解偏差会掩盖真问题而不是暴露它。本轮前两批全是文档与局部改动，混入一次数据结构重构会让三者的风险互相污染。而它本身只是内存优化，不涉及正确性：一次复合 append 使其后每次写时复制多付 20%（实测 38.2 MB → 45.8 MB），代价明确且已在 `AGENTS.md` 记录在案。
+
+**`CacheLockStripes`** 一项已在本批完成，不再列为可选加固。
 
 ## 验证
 

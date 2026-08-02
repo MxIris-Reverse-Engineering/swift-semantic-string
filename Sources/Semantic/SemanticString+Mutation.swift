@@ -106,13 +106,29 @@ extension SemanticString {
 
     /// Debug-only check backing the assertion above. `true` when the leaf's
     /// `buildComponents()` produces exactly what the fast path stores.
+    ///
+    /// Reads `string` **once** and compares the built atom field by field.
+    /// The previous form read `component.string` twice more and built a
+    /// throwaway single-element array to compare against — for `Indent`,
+    /// whose `string` is a fresh `String(repeating:)`, that meant allocating
+    /// the same padding three times per appended token, plus the array. The
+    /// remaining `buildComponents()` call is irreducible: verifying what it
+    /// returns requires calling it. That still makes this the most expensive
+    /// append overload in debug, which is why the assertion is documented as
+    /// a development aid rather than a guarantee.
     @usableFromInline
     internal static func upholdsPlainAtomicPromise(_ component: some PlainAtomicSemanticComponent) -> Bool {
+        let componentString = component.string
         let built = component.buildComponents()
-        if component.string.isEmpty {
+        if componentString.isEmpty {
             return built.isEmpty
         }
-        return built == [AtomicComponent(string: component.string, type: component.type)]
+        guard built.count == 1, let onlyAtom = built.first else {
+            return false
+        }
+        return onlyAtom.string == componentString
+            && onlyAtom.type == component.type
+            && onlyAtom.identifier == nil
     }
 
     /// Leaves that customize `buildComponents()`, and leaves reached through

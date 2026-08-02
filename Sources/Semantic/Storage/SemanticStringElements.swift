@@ -44,6 +44,12 @@ struct SemanticStringElements: Sendable {
         var atoms: [AtomicComponent] = []
         var elementEndOffsets: [Int] = []
         elementEndOffsets.reserveCapacity(items.count)
+        // `atoms` receives every atom of every item, so leaving it unreserved
+        // grew it through ~18 geometric reallocations for a 10k-row container
+        // while the boundary table beside it was reserved. One atom per item
+        // is the floor (an item flattening to nothing contributes none), which
+        // is enough to skip the early doubling rounds.
+        atoms.reserveCapacity(items.count)
         for item in items {
             for atom in item.buildComponents() where !atom.string.isEmpty {
                 atoms.append(atom)

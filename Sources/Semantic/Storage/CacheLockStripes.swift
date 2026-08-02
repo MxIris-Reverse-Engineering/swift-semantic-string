@@ -53,8 +53,30 @@ enum CacheLockStripes {
     /// still bounce the same line between cores, and the table would serialize
     /// as badly as a single lock (measured: as slow as running the same work on
     /// one thread). One cache line per stripe removes that false sharing.
+    ///
+    /// Derived rather than hard-coded, so it cannot be wrong. 128 covers a
+    /// cache line on every target this package builds for, but `Primitive` is
+    /// `pthread_mutex_t` off Darwin and Windows — an opaque platform-defined
+    /// block (40 bytes on glibc, no guarantee elsewhere) that nothing here
+    /// bounds. A hard-coded 128 with a runtime `precondition` traded a
+    /// compile-clean build for a trap inside `swift_once` on the first
+    /// `SemanticString.string` read anywhere in the process — and under
+    /// `-Ounchecked`, where preconditions are removed, for adjacent stripes
+    /// silently overlapping and mutual exclusion vanishing outright. Taking
+    /// the max here makes both outcomes unreachable instead of merely loud.
+    ///
+    /// Doubling (rather than rounding up to a multiple of 128) keeps the
+    /// result a power of two, which `allocate(byteCount:alignment:)` requires
+    /// of its alignment — 384 would be a legal cache-line multiple and an
+    /// illegal alignment.
     @usableFromInline
-    static let stride = 128
+    static let stride: Int = {
+        var candidate = 128
+        while candidate < MemoryLayout<Primitive>.stride {
+            candidate *= 2
+        }
+        return candidate
+    }()
 
     /// `nonisolated(unsafe)` because the pointer itself is immutable after the
     /// one-time allocation; what it points at is mutable precisely so the
@@ -62,15 +84,17 @@ enum CacheLockStripes {
     /// through `lock` / `unlock`.
     @usableFromInline
     nonisolated(unsafe) static let base: UnsafeMutableRawPointer = {
-        // `stride` is sized for cache lines, not for the primitive: Darwin's
-        // lock is 4 bytes and `SRWLOCK` is pointer-sized, but
-        // `pthread_mutex_t` is an opaque platform-defined block (40 bytes on
-        // glibc, no guarantee elsewhere). If a platform's primitive ever
-        // outgrew the stripe, adjacent stripes would overlap and mutual
-        // exclusion would silently vanish — fail loudly here instead.
-        precondition(
-            MemoryLayout<Primitive>.stride <= stride,
-            "CacheLockStripes.stride must fit the platform's locking primitive"
+        // `stride` is derived as `max(128, next power of two ≥ the
+        // primitive's stride)`, so it fits the platform's locking primitive
+        // by construction — a stripe can no longer overlap its neighbour, on
+        // any platform, in any optimization mode. The assertion that used to
+        // stand here was a runtime check in a lazily-initialized `static let`:
+        // it would have fired inside `swift_once` on the first cache fill
+        // rather than at build time, and `-Ounchecked` would have removed it
+        // entirely. Kept as a debug-only restatement of the invariant.
+        assert(
+            MemoryLayout<Primitive>.stride <= stride && stride.nonzeroBitCount == 1,
+            "CacheLockStripes.stride must fit the platform's locking primitive and stay a power of two"
         )
         let table = UnsafeMutableRawPointer.allocate(byteCount: count * stride, alignment: stride)
         for stripeIndex in 0 ..< count {

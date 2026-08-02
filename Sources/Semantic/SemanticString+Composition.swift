@@ -1,15 +1,26 @@
 // MARK: - Appending (Non-Mutating)
 
 extension SemanticString {
-    /// A copy of `self` carrying no identifier scopes. Every `appending`
-    /// result that actually appends starts here: building a fresh string
-    /// never leaks open scopes on `self` into the result. Overloads that
-    /// append nothing (`appending("")`, a false `if:` condition) return
-    /// `self` unchanged instead — scopes included — matching the historical
-    /// early returns, so a streaming writer that probes with empty input
-    /// keeps its open scope.
+    /// `self` with its identifier scopes cleared. Every `appending` result
+    /// that actually appends starts here: building a fresh string never leaks
+    /// open scopes on `self` into the result. Overloads that append nothing
+    /// (`appending("")`, a false `if:` condition) return `self` unchanged
+    /// instead — scopes included — matching the historical early returns, so
+    /// a streaming writer that probes with empty input keeps its open scope.
+    ///
+    /// `consuming`, and that is the whole point. Written as a borrowing
+    /// method it bound a second strong reference to the storage before the
+    /// subsequent `append`, so `isKnownUniquelyReferenced` inside
+    /// `makeUniqueForMutation()` was **always** false and every `appending` /
+    /// `+` deep-copied the atom array — even `result = result + x`, where the
+    /// operand is dead on the next line. Consuming forwards ownership when
+    /// the caller has no further use for the value, letting that append hit
+    /// the in-place branch; when the caller does keep using it, the compiler
+    /// inserts the copy that used to be unconditional. This is a repeat fix:
+    /// the first review round removed the same `var copy = self` pattern for
+    /// the same reason, and the flat-storage redesign reintroduced it.
     @inlinable
-    internal func makingUnscopedCopy() -> SemanticString {
+    internal consuming func makingUnscopedCopy() -> SemanticString {
         var copy = self
         copy.identifierScopeStack = []
         return copy
@@ -17,7 +28,7 @@ extension SemanticString {
 
     /// Returns a new semantic string with the other string appended.
     @inlinable
-    public func appending(_ other: SemanticString) -> SemanticString {
+    public consuming func appending(_ other: SemanticString) -> SemanticString {
         var copy = makingUnscopedCopy()
         copy.append(other)
         return copy
@@ -26,7 +37,7 @@ extension SemanticString {
     /// Returns a new semantic string with the component appended as one
     /// element.
     @inlinable
-    public func appending(_ component: some SemanticStringComponent) -> SemanticString {
+    public consuming func appending(_ component: some SemanticStringComponent) -> SemanticString {
         var copy = makingUnscopedCopy()
         copy.append(component)
         return copy
@@ -35,7 +46,7 @@ extension SemanticString {
     /// Returns a new semantic string with the leaf appended. Statically
     /// resolved; allocates nothing beyond the result's storage.
     @inlinable
-    public func appending(_ component: some PlainAtomicSemanticComponent) -> SemanticString {
+    public consuming func appending(_ component: some PlainAtomicSemanticComponent) -> SemanticString {
         var copy = makingUnscopedCopy()
         copy.append(component)
         return copy
@@ -44,7 +55,7 @@ extension SemanticString {
     /// Returns a new semantic string with the erased leaf appended, keeping
     /// its `identifier`.
     @inlinable
-    public func appending(_ component: AtomicComponent) -> SemanticString {
+    public consuming func appending(_ component: AtomicComponent) -> SemanticString {
         var copy = makingUnscopedCopy()
         copy.append(component)
         return copy
@@ -58,7 +69,7 @@ extension SemanticString {
     /// the historical early return: a streaming writer that appends empty
     /// input must not lose the scope it is writing under.
     @inlinable
-    public func appending(_ string: String, type: SemanticType = .standard) -> SemanticString {
+    public consuming func appending(_ string: String, type: SemanticType = .standard) -> SemanticString {
         guard !string.isEmpty else { return self }
         var copy = makingUnscopedCopy()
         copy.append(string, type: type)
@@ -170,17 +181,17 @@ extension SemanticString {
 
 extension SemanticString {
     @inlinable
-    public static func + (lhs: SemanticString, rhs: SemanticString) -> SemanticString {
+    public static func + (lhs: consuming SemanticString, rhs: SemanticString) -> SemanticString {
         lhs.appending(rhs)
     }
 
     @inlinable
-    public static func + (lhs: SemanticString, rhs: some SemanticStringComponent) -> SemanticString {
+    public static func + (lhs: consuming SemanticString, rhs: some SemanticStringComponent) -> SemanticString {
         lhs.appending(rhs)
     }
 
     @inlinable
-    public static func + (lhs: SemanticString, rhs: some PlainAtomicSemanticComponent) -> SemanticString {
+    public static func + (lhs: consuming SemanticString, rhs: some PlainAtomicSemanticComponent) -> SemanticString {
         lhs.appending(rhs)
     }
 
