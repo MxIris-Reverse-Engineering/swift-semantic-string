@@ -28,26 +28,34 @@ extension SemanticString {
 extension SemanticString {
     /// Appends one atom as one element.
     ///
-    /// An empty atom contributes nothing to `atoms` (upholding the "no
-    /// zero-length components" invariant) but still records a zero-length
-    /// element, exactly as the historical element tree kept a slot for it.
+    /// An empty atom is a complete no-op — no atom, no element slot, and
+    /// crucially no `makeUniqueForMutation()`: the rendered text does not
+    /// change, so the string cache stays warm and a `nil` (1:1) boundary
+    /// table stays `nil` instead of being materialized for a zero-length
+    /// slot. Element slots are container-layout bookkeeping that every
+    /// consumer skips (`guard !itemComponents.isEmpty`), so dropping the
+    /// slot is unobservable; sixth round — previously this recorded the
+    /// slot, which cost a full table materialization and a cache drop per
+    /// zero-width append.
     @usableFromInline
     internal mutating func appendAtomElement(_ atomicComponent: AtomicComponent) {
-        makeUniqueForMutation()
         if atomicComponent.string.isEmpty {
-            _storage.closeElement(appendedAtomCount: 0)
-        } else {
-            _storage.atoms.append(atomicComponent)
-            _storage.closeElement(appendedAtomCount: 1)
+            return
         }
+        makeUniqueForMutation()
+        _storage.atoms.append(atomicComponent)
+        _storage.closeElement(appendedAtomCount: 1)
     }
 
     /// Appends the flattening of one component as one element.
     ///
     /// Zero-length atoms in the flattening are dropped; a flattening that
-    /// drops to nothing records a zero-length element.
+    /// drops to nothing is a complete no-op (see `appendAtomElement`).
     @usableFromInline
     internal mutating func appendComponentElement(flattening builtComponents: [AtomicComponent]) {
+        guard builtComponents.contains(where: { !$0.string.isEmpty }) else {
+            return
+        }
         makeUniqueForMutation()
         var appendedAtomCount = 0
         for atomicComponent in builtComponents where !atomicComponent.string.isEmpty {
@@ -121,9 +129,9 @@ extension SemanticString {
     /// One appended component is one element no matter what it flattens to —
     /// `MemberList`-style containers render it as one row. A component that
     /// flattens to nothing (an appended `nil` optional, `EmptyComponent`, an
-    /// empty composite) records a zero-length element: no atoms, no text, no
-    /// observable change — the slot is container-layout bookkeeping only and
-    /// does not affect `isEmpty`, which reports components.
+    /// empty composite) is a complete no-op: no atoms, no element slot, no
+    /// cache drop — containers skip empty elements anyway, so the slot was
+    /// never observable (sixth round).
     @inlinable
     public mutating func append(_ component: some SemanticStringComponent) {
         if let atomicComponent = component as? AtomicComponent {
@@ -153,15 +161,23 @@ extension SemanticString {
     /// never holds zero-length atoms.
     @usableFromInline
     internal mutating func appendSemanticStringElement(_ semanticString: SemanticString) {
-        makeUniqueForMutation()
         let appendedAtoms = semanticString._storage.atoms
+        if appendedAtoms.isEmpty {
+            return
+        }
+        makeUniqueForMutation()
         _storage.atoms.append(contentsOf: appendedAtoms)
         _storage.closeElement(appendedAtomCount: appendedAtoms.count)
     }
 
     /// Concatenates another string's contents, element boundaries included.
+    /// Appending a string that renders nothing is a complete no-op, whatever
+    /// zero-length element slots it may carry (see `appendAtomElement`).
     @inlinable
     public mutating func append(_ semanticString: SemanticString) {
+        if semanticString._storage.atoms.isEmpty {
+            return
+        }
         makeUniqueForMutation()
         _storage.appendContents(of: semanticString._storage)
     }

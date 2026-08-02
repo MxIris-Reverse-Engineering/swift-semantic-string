@@ -45,6 +45,8 @@ final class Storage {
 
 ### 行为决策（与 main 的逐字节对照）
 
+> **更新（第五、六轮）**：本节第 1、2 条已被第五轮推翻——`isEmpty` 现为**组件计数**（全部空判度量重合），`ForEach(_:separator:)` 随之**跳过**渲染为空的条目（`["a","","b"]` → `"a, b"`，与 `Joined`/`Group` 一致，是对 main 的有意偏离）；第 3 条中「零长元素照记」在第六轮进一步收紧为「append 路径完全 no-op、不记槽」（仅手工数组初始化器保留占位槽）。见 [FifthReviewFixes.md](FifthReviewFixes.md) 与 [SixthReviewFixes.md](SixthReviewFixes.md)。以下保留为当轮的历史决策记录。
+
 以 `main` 的 136 项 golden 输出为基准：
 
 1. **输出逐字节一致**：全部 `.string` 输出与 main 相同，包括 `ForEach(separator:)` 对空条目发分隔符的行为（`["a","","b"]` → `"a, , b"`）——上一轮把它改成了 `"a, b"`，与 PR 的 byte-identical 承诺冲突，本轮恢复。

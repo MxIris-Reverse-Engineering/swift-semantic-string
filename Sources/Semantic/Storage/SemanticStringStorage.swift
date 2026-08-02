@@ -29,9 +29,11 @@ extension SemanticString {
     /// `start = i == 0 ? 0 : elementEndOffsets[i - 1]`. Offsets are
     /// monotonically non-decreasing and the last one equals `atoms.count`.
     /// A **zero-length element** (`elementEndOffsets[i] ==
-    /// elementEndOffsets[i - 1]`) records an appended component that
-    /// flattened to nothing — `EmptyComponent`, a `nil` optional, an empty
-    /// composite. It contributes no atoms and no text, and it is
+    /// elementEndOffsets[i - 1]`) records an input component that flattened
+    /// to nothing in the hand-built array initializers
+    /// (`init(components: [AtomicComponent])` keeps one slot per input
+    /// entry). Appends that flatten to nothing record no slot at all —
+    /// they are complete no-ops (sixth round). Either way the slot is
     /// container-layout bookkeeping only: per-element containers skip it (no
     /// row, no separator), and no public measure observes it — `isEmpty`
     /// reports components, matching `count`, `==`, `hash`, and `Codable`.

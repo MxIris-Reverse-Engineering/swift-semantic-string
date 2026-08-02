@@ -80,30 +80,34 @@ struct FlatStorageTests {
         #expect(semanticString.string == "prefixa, b")
     }
 
-    @Test("A composite that flattens to nothing records a zero-length element")
-    func emptyCompositeRecordsZeroLengthElement() {
+    @Test("A composite that flattens to nothing is a complete no-op")
+    func emptyCompositeAppendIsANoOp() {
+        // Sixth round: no element slot, no table materialization, no cache
+        // drop — containers skip empty elements anyway, so the slot was
+        // never observable.
         var semanticString = SemanticString()
         semanticString.append("x", type: .keyword)
         semanticString.append(EmptyComponent())
         #expect(semanticString._storage.atoms.count == 1)
-        #expect(semanticString._storage.elementEndOffsets == [1, 1])
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.isEmpty == false)
         #expect(semanticString.string == "x")
 
-        // Streaming afterwards appends one-atom elements to the table.
+        // Streaming afterwards stays on the implicit 1:1 table.
         semanticString.append("y", type: .keyword)
-        #expect(semanticString._storage.elementEndOffsets == [1, 1, 2])
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.string == "xy")
     }
 
-    @Test("Appending a nil optional component records a zero-length element")
-    func nilOptionalAppendRecordsZeroLengthElement() {
+    @Test("Appending a nil optional component is a complete no-op")
+    func nilOptionalAppendIsANoOp() {
         var semanticString = SemanticString()
         semanticString.append("a", type: .keyword)
         semanticString.append(nil as Keyword?)
         semanticString.append("b", type: .keyword)
         #expect(semanticString._storage.atoms.count == 2)
-        #expect(semanticString._storage.elementCount == 3)
+        #expect(semanticString._storage.elementCount == 2)
+        #expect(semanticString._storage.elementEndOffsets == nil)
         #expect(semanticString.string == "ab")
     }
 

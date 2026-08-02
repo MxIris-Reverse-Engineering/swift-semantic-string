@@ -15,6 +15,7 @@
 - [ThirdReviewFixes.md](ThirdReviewFixes.md) —— 第三轮评审（15 处全部核验属实）后的收尾修正：手工数组构造补零长元素槽（相等值不再对 `isEmpty` 给出相反答案）、容器判空统一看过滤后的展平（钉为第二条有意偏离）、Frozen `==`/`hash` 统一为 canonical 比较（NFC/NFD 冻结保相等）、`enumerateSpans` 三向违约全部 trap、超长 token 按字形簇切分、解码器「先校验长度列再物化其余列」、锁条带尺寸断言，以及 builder 收集路径慢于 `main` 约 1.4–1.7× 的如实记账（有意不修的取舍）。
 - [FourthReviewFixes.md](FourthReviewFixes.md) —— 第四轮评审后的两处 `FrozenSemanticString` 一致性修正：解码器不再拒收越界 `identifierIndex`（原样保留、读取归 nil，与 unchecked init 承诺及「解码保留未知 typeCode」对称，Codable 往返恢复逐字节幂等）；`==`/`hash` 比较**归一后**的 `SemanticType` 而非原始 `typeCode` 字节（两个都渲染为 `.other` 的快照恢复判等）。同源于「读者当降级、另一路径当原始字节」的字段处理不一致。
 - [FifthReviewFixes.md](FifthReviewFixes.md) —— 第五轮评审（15 处，独立复现全部属实）后的收口：`isEmpty` 改为组件计数使全部空判度量重合（相等值不再对 `isEmpty` 给出相反答案，`ForEach` 随之与其它分隔容器一致跳过空项）；`appending("")` 恢复保留 identifier scope 的 early return；Frozen `==` 快路径加字节相等门槛（canonical 重排不再误判相等）、`hash` 不再走文本（50 万 span 值 hash -62%、Set 插入 -65%，畸形值哈希不再崩溃）、`==` 慢路径与 `enumerateSpans` 共用带名诊断；flaky 的逐字节 Codable 断言补 `.sortedKeys`；`typeCodeBijection` 增加编译期穷尽性哨兵；「分配数守卫」「span 不切分 Character」「identifier index 越界校验」「解码器资源上界」四处失实文档全部改为实话。
+- [SixthReviewFixes.md](SixthReviewFixes.md) —— 合并前验证轮：对第五轮后分支的 15 项评审发现逐条独立复现（12 属实、2 定性误报、1 细节失实），并与 `main` 对照定位回归来源。修复：零宽 append 改为完全 no-op（不再丢缓存、不再物化边界表）、Frozen `==` 慢路径补 undercover trap、`DeclarationBlock` 识别 CRLF 结尾的 body、release 模式测试守卫；变异测试驱动补上两条核心存储不变量（边界拼接、零长过滤）的容器渲染 pin。元素边界经 `Codable` 往返坍缩确认为 `main` 固有问题，单开 issue 跟踪。
 
 ## 约定
 

@@ -46,9 +46,12 @@ struct ConcurrencyTests {
         }
     }
 
-    /// A tree-state string whose elements are whole nested `SemanticString`s.
-    /// Flattening it recurses into their storages, which is the shape that
-    /// would deadlock if flattening ever moved inside the cache lock.
+    /// A string built from whole nested `SemanticString`s. On the historical
+    /// two-state storage, flattening this shape recursed into the nested
+    /// storages — the shape that would deadlock if flattening ever moved
+    /// inside the cache lock. On flat storage the nesting is expanded at
+    /// append time and reading touches exactly one storage; the fixture is
+    /// kept as the smoke-test shape (see the Nested Flattening section note).
     private func nestedString(index: Int = 0) -> SemanticString {
         SemanticString {
             DeclarationBlock(level: 0) {

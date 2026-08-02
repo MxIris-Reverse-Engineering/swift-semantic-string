@@ -217,6 +217,10 @@ struct FifthReviewRegressionTests {
 
     // MARK: F8 — the PlainAtomicSemanticComponent promise is asserted in debug
 
+    #if DEBUG
+    // Debug-only: the guard is an `assert`, compiled out under `-O`, so in a
+    // release test run the child process exits 0 and the expectation would
+    // fail (sixth round — `swift test -c release` used to go red here).
     @Test("Debug builds assert on a conformance that overrides buildComponents()")
     func plainAtomicPromiseIsAssertedInDebug() async {
         await #expect(processExitsWith: .failure) {
@@ -224,6 +228,7 @@ struct FifthReviewRegressionTests {
             value.append(PromiseViolatingLeaf())
         }
     }
+    #endif
 
     // MARK: F9 — ForEach consistency with the other separator containers
 

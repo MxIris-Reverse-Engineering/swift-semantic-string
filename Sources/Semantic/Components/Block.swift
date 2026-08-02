@@ -95,8 +95,11 @@ public struct DeclarationBlock: SemanticStringComponent {
 
         // Closing brace with indent (only if body had content)
         if result.count > bodyStartCount {
-            // Add BreakLine before closing brace if body doesn't end with newline
-            if let last = result.last, !last.string.hasSuffix("\n") {
+            // Add BreakLine before closing brace if body doesn't end with
+            // newline. Byte-level check, deliberately: `hasSuffix("\n")` is
+            // grapheme-based and returns false for a body ending in "\r\n"
+            // (a single `Character`), which would add a spurious blank line.
+            if let last = result.last, last.string.utf8.last != UInt8(ascii: "\n") {
                 result.append(CommonAtomicComponents.breakLine)
             }
             if level > 0 && !indentString.isEmpty {

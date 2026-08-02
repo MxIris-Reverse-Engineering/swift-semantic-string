@@ -39,9 +39,11 @@ struct ThirdReviewRegressionTests {
         #expect(appendedEmpty == SemanticString())
         #expect(appendedEmpty.first == nil)
         #expect(appendedEmpty.count == 0)
-        // The element slot itself is still recorded — container-layout
-        // bookkeeping, invisible to every public measure.
-        #expect(appendedEmpty._storage.elementCount == 1)
+        // Sixth round: the append is a complete no-op — no element slot.
+        // The hand-built array initializer still records one slot per input
+        // component; both shapes are container-layout bookkeeping invisible
+        // to every public measure, so the divergence is unobservable.
+        #expect(appendedEmpty._storage.elementCount == 0)
         #expect(handBuiltEmpty._storage.elementCount == 1)
     }
 

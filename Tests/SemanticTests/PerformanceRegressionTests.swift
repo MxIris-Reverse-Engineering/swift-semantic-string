@@ -1490,11 +1490,11 @@ struct ForEachComponentTests {
     func forEachFiltersEmpty() {
         // Both items here produce content, so nothing is filtered: this pins
         // the plain joining behavior. Note that `SemanticString.isEmpty`
-        // counts *elements*, so an item whose builder emits a zero-output
-        // element still gets its separator — `ForEach` over ["a", "", "b"]
-        // renders "a, , b", exactly as on the historical element tree. That
-        // edge is pinned by
-        // `RedesignRegressionTests.forEachSeparatorMatchesMainAroundEmptyItems`.
+        // counts *components* (fifth round), so `ForEach` skips items whose
+        // builder output renders nothing — `ForEach` over ["a", "", "b"]
+        // renders "a, b", consistent with `Joined`/`Group` and a deliberate
+        // divergence from the historical element tree. That edge is pinned by
+        // `FifthReviewRegressionTests.separatorContainersAgreeOnEmptyItems`.
         let forEach = ForEach(["a", "b"], separator: ", ") { item in
             if item == "a" {
                 Standard(item)

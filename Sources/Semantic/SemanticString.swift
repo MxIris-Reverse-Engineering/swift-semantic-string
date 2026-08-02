@@ -137,10 +137,11 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     /// Because storage never holds a zero-length component, the emptiness
     /// measures all coincide: `isEmpty` ⟺ `count == 0` ⟺ `first == nil` ⟺
     /// `string.isEmpty` — and they agree with `==`, `hash`, and `Codable`,
-    /// which compare components. Element slots recorded by appends that
-    /// flatten to nothing (`EmptyComponent`, a `nil` optional, an empty
-    /// composite) are container-layout bookkeeping only and do not affect
-    /// any of these measures.
+    /// which compare components. Appends that flatten to nothing
+    /// (`EmptyComponent`, a `nil` optional, an empty composite) are complete
+    /// no-ops; the zero-length element slots the hand-built array
+    /// initializers keep are container-layout bookkeeping only and do not
+    /// affect any of these measures.
     @inlinable
     public var isEmpty: Bool {
         _storage.atoms.isEmpty
@@ -184,10 +185,12 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     /// them (`AtomicComponent.buildComponents()` returns `[]` for an empty
     /// string), so keeping them here would make the same content compare,
     /// hash, and count differently depending on how it was built. A dropped
-    /// entry still records a zero-length *element* — exactly what appending
-    /// the same component would do — which is container-layout bookkeeping
-    /// only; `isEmpty` reports components, so equal values agree on every
-    /// emptiness measure however they were built.
+    /// entry still records a zero-length *element* — one slot per input
+    /// entry, preserving the array's positional shape — which is
+    /// container-layout bookkeeping only; `isEmpty` reports components, so
+    /// equal values agree on every emptiness measure however they were
+    /// built. (Appending the same component is a complete no-op and records
+    /// no slot; both shapes are unobservable to every public measure.)
     ///
     /// This is observable to callers that construct components by hand: a
     /// zero-length entry does not survive into `count`, `components`,

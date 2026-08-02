@@ -104,8 +104,8 @@ extension FrozenSemanticString {
     /// "no spans" and "no text" coincide.
     ///
     /// This is the same measure as `SemanticString.isEmpty`, which likewise
-    /// reports "no components": freezing preserves it. Element slots the
-    /// builder records for appends that flatten to nothing are layout
+    /// reports "no components": freezing preserves it. Zero-length element
+    /// slots (kept by the hand-built array initializers) are layout
     /// bookkeeping that neither measure observes, and a snapshot does not
     /// carry them — exactly as a `Codable` round trip has always dropped
     /// them.
@@ -259,9 +259,14 @@ extension FrozenSemanticString: Hashable {
         //
         // The boundary walk enforces the unchecked initializer's invariants
         // exactly as `enumerateSpans(_:)` does: a value whose spans overrun
-        // the text or split a scalar traps here with a diagnostic naming
-        // this type, rather than dying in bare index arithmetic or silently
-        // comparing mis-sliced text.
+        // the text, split a scalar, or undercover the text (the trailing
+        // precondition below, matching `enumerateSpans`' end-of-walk check;
+        // sixth round) traps here with a diagnostic naming this type, rather
+        // than dying in bare index arithmetic or silently comparing
+        // mis-sliced text. The byte-identical fast path above does not walk,
+        // so two byte-identical malformed twins still compare equal quietly —
+        // they trap in whatever later read walks them, as `hash(into:)`'s
+        // note describes.
         var leftLowerBound = lhs.text.startIndex
         var rightLowerBound = rhs.text.startIndex
         for (leftSpan, rightSpan) in zip(lhs.spans, rhs.spans) {
@@ -279,6 +284,10 @@ extension FrozenSemanticString: Hashable {
             leftLowerBound = leftUpperBound
             rightLowerBound = rightUpperBound
         }
+        precondition(
+            leftLowerBound == lhs.text.endIndex && rightLowerBound == rhs.text.endIndex,
+            "FrozenSemanticString spans undercover the text; the unchecked init's invariants were violated"
+        )
         return true
     }
 

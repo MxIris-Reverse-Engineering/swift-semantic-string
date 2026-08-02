@@ -28,8 +28,10 @@ identifierTable: [String]    identifier 内插表（1-based；0 = 无）
   `frozen()` 直接复用已缓存的 `string` 作为 text arena，不再重新逐 token 拼接。
 - **全 `let`** ⇒ 无条件 `Sendable`，无锁、无 `@unchecked`。
 - Span 只存长度不存偏移，消费方顺序累加（渲染本来就是顺序遍历）。
-- 超过 `UInt16.max` UTF-8 字节的 token 在 **Unicode scalar 边界**拆成相邻同类
-  span；只做拼接或按 run 上色的消费者察觉不到差异。
+- 超过 `UInt16.max` UTF-8 字节的 token 拆成相邻同类 span；只做拼接或按 run
+  上色的消费者察觉不到差异。（第三轮修正：拆分边界从 Unicode scalar 提升为
+  grapheme cluster，单个 cluster 自身超过 65535 字节时才退化为 scalar 边界，
+  见 [ThirdReviewFixes.md](ThirdReviewFixes.md)。）
 - `SemanticType` ↔ `UInt8` 映射**只增不改号**；未知 code（未来版本编出的）枚举时
   落到 `.other` 而非崩溃。
 - **Codable 列式编码**（text + 四个同质数组），比 SemanticString 的
