@@ -14,7 +14,7 @@
 /// ```
 public struct Group: SemanticStringComponent {
     @usableFromInline
-    var items: [any SemanticStringComponent]
+    var items: SemanticStringElements
 
     @usableFromInline
     var separator: (any SemanticStringComponent)?
@@ -29,21 +29,21 @@ public struct Group: SemanticStringComponent {
     /// Creates a group from an array of semantic strings.
     @inlinable
     public init(_ items: [SemanticString]) {
-        self.items = items
+        self.items = SemanticStringElements(items)
         self.separator = nil
     }
 
     /// Creates a group from variadic semantic strings.
     @inlinable
     public init(_ items: SemanticString...) {
-        self.items = items
+        self.items = SemanticStringElements(items)
         self.separator = nil
     }
 
     /// Creates an empty group.
     @inlinable
     public init() {
-        self.items = []
+        self.items = SemanticStringElements()
         self.separator = nil
     }
 
@@ -52,25 +52,25 @@ public struct Group: SemanticStringComponent {
         if let sep = separator {
             let sepComponents = sep.buildComponents()
             var result: [AtomicComponent] = []
-            result.reserveCapacity(items.count)
+            result.reserveCapacity(items.totalComponentCount + sepComponents.count * max(items.count - 1, 0))
             var needsSeparator = false
-            for item in items {
-                let components = item.buildComponents()
-                guard !components.isEmpty else { continue }
+            for index in items.indices {
+                // Zero-copy slice of the element's components; empty items
+                // are skipped without emitting a separator around nothing.
+                let itemComponents = items.atoms(ofElementAt: index)
+                guard !itemComponents.isEmpty else { continue }
                 if needsSeparator {
                     result.append(contentsOf: sepComponents)
                 }
-                result.append(contentsOf: components)
+                result.append(contentsOf: itemComponents)
                 needsSeparator = true
             }
             return result
         }
 
         var result: [AtomicComponent] = []
-        result.reserveCapacity(items.count)
-        for item in items {
-            result.append(contentsOf: item.buildComponents())
-        }
+        result.reserveCapacity(items.totalComponentCount)
+        items.appendAllComponents(into: &result)
         return result
     }
 

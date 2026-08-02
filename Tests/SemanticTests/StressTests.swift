@@ -306,17 +306,13 @@ struct CacheReuseStressTests {
         #expect(readElapsed < buildElapsed * 2)
     }
 
-    @Test("1k reads of .components on a 1k-component SemanticString — cache is O(1)")
+    @Test("1k reads of .components on a 1k-component SemanticString — reads return the storage array")
     func repeatedComponentsReadsAreCached() {
         let clock = ContinuousClock()
         let semanticString = SemanticString {
             for index in 0..<1_000 {
                 Standard("\(index)")
             }
-        }
-
-        let buildElapsed = clock.measure {
-            _ = semanticString.components
         }
 
         let readElapsed = clock.measure {
@@ -327,7 +323,14 @@ struct CacheReuseStressTests {
 
         #expect(semanticString.components.count == 1_000)
 
-        #expect(readElapsed < buildElapsed * 2)
+        // `components` hands out the storage array by reference, so 1,000
+        // reads are 1,000 retain/release pairs — microseconds in total. A
+        // relative baseline is useless here (there is no build step to
+        // compare against), so this is an absolute bound. It is not a wide
+        // one: an O(n) re-flatten regression measures around 1.5–2× this
+        // limit, but the passing side has three orders of magnitude of
+        // headroom, so the assertion is stable where it needs to be.
+        #expect(readElapsed < .milliseconds(50))
     }
 }
 

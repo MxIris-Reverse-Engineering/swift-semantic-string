@@ -1,11 +1,14 @@
 /// A string composed of semantically typed components.
 ///
 /// `SemanticString` is the primary type for building styled text output.
-/// It stores a list of semantic components that can be flattened into
-/// atomic components for rendering.
+/// It stores a flat array of atomic components plus an explicit element
+/// boundary table; composite components are flattened eagerly when they are
+/// appended. See `SemanticString.Storage` in
+/// `Storage/SemanticStringStorage.swift` for the representation and its
+/// invariants.
 ///
 /// This type implements copy-on-write semantics for efficient copying
-/// and caches computed components to avoid redundant calculations.
+/// and caches the concatenated string to avoid redundant work.
 ///
 /// Example:
 /// ```swift
@@ -19,113 +22,138 @@
 /// }
 /// ```
 public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStringComponent {
-    /// Internal storage class for copy-on-write semantics
-    @usableFromInline
-    final class Storage: @unchecked Sendable {
-        @usableFromInline
-        var elements: [any SemanticStringComponent]
-
-        @usableFromInline
-        var cachedComponents: [AtomicComponent]?
-
-        @usableFromInline
-        var cachedString: String?
-
-        @inlinable
-        init(elements: [any SemanticStringComponent] = []) {
-            self.elements = elements
-        }
-
-        @inlinable
-        init(copying other: Storage) {
-            self.elements = other.elements
-            self.cachedComponents = other.cachedComponents
-            self.cachedString = other.cachedString
-        }
-    }
-
     @usableFromInline
     var _storage: Storage
 
     /// Transient identifier-scope stack used while a printer streams content
-    /// into this string. The innermost (last) entry stamps every appended
-    /// atomic component's `identifier`; a `nil` entry acts as a barrier that
-    /// suppresses stamping until a nested non-nil scope overrides it. This is
-    /// writer-side state only: it does not participate in equality, hashing,
-    /// or coding, and flattened components keep the stamps they were born
-    /// with.
+    /// into this string. The innermost (last) entry stamps the `identifier`
+    /// of every string appended via `append(_:type:)` / `write(_:type:)`;
+    /// a `nil` entry acts as a barrier that suppresses stamping until a
+    /// nested non-nil scope overrides it. Component appends never stamp —
+    /// a component that wants an identifier carries its own
+    /// (`AtomicComponent(string:type:identifier:)`). This is writer-side
+    /// state only: it does not participate in equality, hashing, or coding,
+    /// and flattened components keep the stamps they were born with.
     @usableFromInline
     var identifierScopeStack: [String?] = []
 
-    /// Ensures unique ownership of storage for mutation (copy-on-write)
+    // MARK: - Copy-on-Write
+
+    /// Ensures unique ownership of storage for a mutation, dropping the
+    /// string cache instead of copying it.
+    ///
+    /// Every mutation invalidates the cache immediately afterwards, so
+    /// carrying it across the copy would cost a lock round trip for a value
+    /// that is discarded on the next line. This is the only copy-on-write
+    /// path; it is `@inlinable` because it touches no locking primitive.
+    ///
+    /// The unlocked `cachedString` write below is the deliberate exception to
+    /// the storage's "every access to `cachedString` goes through
+    /// `cacheLock`" rule, and it is sound only because of the branch it sits
+    /// in: `isKnownUniquelyReferenced` proves this value holds the sole
+    /// strong reference, no `Storage` is ever reachable except through a
+    /// `SemanticString`'s strong reference, and mutating a value while
+    /// another thread reads the *same* value is already a race at the struct
+    /// level (exclusivity). Any future change that lets a `Storage` be
+    /// reached without a strong reference — an intern table, an `Unmanaged`
+    /// fast path, a `weak` cache — invalidates this reasoning and must move
+    /// the write under the stripe lock.
     @inlinable
-    mutating func makeUnique() {
-        if !isKnownUniquelyReferenced(&_storage) {
-            _storage = Storage(copying: _storage)
+    mutating func makeUniqueForMutation() {
+        if isKnownUniquelyReferenced(&_storage) {
+            _storage.cachedString = nil
+        } else {
+            _storage = Storage(copyingContentsOf: _storage)
         }
     }
 
-    /// Invalidates cached values when elements are modified
-    @inlinable
-    mutating func invalidateCache() {
-        _storage.cachedComponents = nil
-        _storage.cachedString = nil
-    }
+    // MARK: - Contents
 
+    /// Element-boundary view of the contents. Zero-copy; see
+    /// `SemanticStringElements`.
     @usableFromInline
-    internal var elements: [any SemanticStringComponent] {
-        _storage.elements
+    var elements: SemanticStringElements {
+        SemanticStringElements(atoms: _storage.atoms, elementEndOffsets: _storage.elementEndOffsets)
     }
 
+    /// The flattened components. Free: the flat atom array *is* the storage,
+    /// so this read allocates nothing, takes no lock, and fills no cache.
+    @inlinable
     public var components: [AtomicComponent] {
-        if let cached = _storage.cachedComponents {
-            return cached
-        }
-        var computed: [AtomicComponent] = []
-        computed.reserveCapacity(_storage.elements.count)
-        for element in _storage.elements {
-            computed.append(contentsOf: element.buildComponents())
-        }
-        _storage.cachedComponents = computed
-        return computed
+        _storage.atoms
     }
 
     /// The number of components.
     @inlinable
-    public var count: Int { components.count }
+    public var count: Int { _storage.atoms.count }
 
     /// The combined string of all components.
+    ///
+    /// Lazily computed and cached. The cache is the one piece of state that
+    /// may be written while the storage is shared, so both the read and the
+    /// publish take the storage's lock stripe — a racing pair of readers may
+    /// both compute, the first store wins, and the results are identical.
     public var string: String {
+        let stripe = _storage.cacheLock
+        CacheLockStripes.lock(stripe)
         if let cached = _storage.cachedString {
+            CacheLockStripes.unlock(stripe)
             return cached
         }
-        let atomicComponents = components
-        var total = 0
+        CacheLockStripes.unlock(stripe)
+
+        // Concatenate outside the lock: it can be expensive and must not
+        // serialize the other storages sharing this stripe.
+        let computed = Self.concatenated(_storage.atoms)
+
+        CacheLockStripes.lock(stripe)
+        if _storage.cachedString == nil {
+            _storage.cachedString = computed
+        }
+        let result = _storage.cachedString ?? computed
+        CacheLockStripes.unlock(stripe)
+        return result
+    }
+
+    /// Concatenates component strings in a single reserved allocation.
+    @usableFromInline
+    internal static func concatenated(_ atomicComponents: [AtomicComponent]) -> String {
+        var utf8ByteCount = 0
         for atomicComponent in atomicComponents {
-            total += atomicComponent.string.utf8.count
+            utf8ByteCount += atomicComponent.string.utf8.count
         }
         var computed = ""
-        computed.reserveCapacity(total)
+        computed.reserveCapacity(utf8ByteCount)
         for atomicComponent in atomicComponents {
             computed += atomicComponent.string
         }
-        _storage.cachedString = computed
         return computed
     }
 
     // MARK: - Collection-like Properties
 
-    /// Returns `true` if the semantic string has no components.
+    /// Returns `true` if this string has no components. `O(1)`.
+    ///
+    /// Because storage never holds a zero-length component, the emptiness
+    /// measures all coincide: `isEmpty` ⟺ `count == 0` ⟺ `first == nil` ⟺
+    /// `string.isEmpty` — and they agree with `==`, `hash`, and `Codable`,
+    /// which compare components. Appends that flatten to nothing
+    /// (`EmptyComponent`, a `nil` optional, an empty composite) are complete
+    /// no-ops; the zero-length element slots the hand-built array
+    /// initializers keep are container-layout bookkeeping only and do not
+    /// affect any of these measures.
     @inlinable
-    public var isEmpty: Bool { _storage.elements.isEmpty }
+    public var isEmpty: Bool {
+        _storage.atoms.isEmpty
+    }
 
     /// Returns the first component, or `nil` if empty.
     @inlinable
-    public var first: AtomicComponent? { components.first }
+    public var first: AtomicComponent? { _storage.atoms.first }
 
     /// Returns the last component, or `nil` if empty.
     @inlinable
-    public var last: AtomicComponent? { components.last }
+    public var last: AtomicComponent? { _storage.atoms.last }
 
     // MARK: - Initialization
 
@@ -139,27 +167,81 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         self = builder()
     }
 
+    /// Creates a string from components, one element each, flattening them
+    /// eagerly. Components that flatten to nothing are recorded as
+    /// zero-length elements.
     @inlinable
     public init(components: [any SemanticStringComponent]) {
-        self._storage = Storage(elements: components)
+        self._storage = Storage()
+        for component in components {
+            append(component)
+        }
     }
 
+    /// Creates a string from atomic components, one element each.
+    ///
+    /// Zero-length components are dropped from the atoms, because they are not
+    /// observable in any other construction path: flattening already discards
+    /// them (`AtomicComponent.buildComponents()` returns `[]` for an empty
+    /// string), so keeping them here would make the same content compare,
+    /// hash, and count differently depending on how it was built. A dropped
+    /// entry still records a zero-length *element* — one slot per input
+    /// entry, preserving the array's positional shape — which is
+    /// container-layout bookkeeping only; `isEmpty` reports components, so
+    /// equal values agree on every emptiness measure however they were
+    /// built. (Appending the same component is a complete no-op and records
+    /// no slot; both shapes are unobservable to every public measure.)
+    ///
+    /// This is observable to callers that construct components by hand: a
+    /// zero-length entry does not survive into `count`, `components`,
+    /// subscripting, `Codable` round trips, equality, or `isEmpty`, and an
+    /// element that consists only of zero-length entries is empty to
+    /// containers (no row, no separator) — the same treatment `Keyword("")`
+    /// has always had.
     @inlinable
     public init(components: [AtomicComponent]) {
-        self._storage = Storage(elements: components)
-        // Pre-cache since we already have atomic components
-        _storage.cachedComponents = components
+        let contents = Self.flatContents(droppingZeroLengthComponentsFrom: components)
+        self._storage = Storage(
+            atoms: contents.atoms,
+            elementEndOffsets: contents.elementEndOffsets
+        )
     }
 
+    /// See `init(components:)`. Zero-length components are dropped.
     @inlinable
     public init(components: AtomicComponent...) {
-        self._storage = Storage(elements: components)
-        _storage.cachedComponents = components
+        self.init(components: components)
     }
 
+    /// Upholds the storage's "no zero-length components" invariant for
+    /// caller-supplied arrays while keeping one element slot per input
+    /// component. Scans first so the common case — nothing to drop — keeps
+    /// the array as is, with the boundary table elided (1:1).
+    @usableFromInline
+    internal static func flatContents(
+        droppingZeroLengthComponentsFrom components: [AtomicComponent]
+    ) -> (atoms: [AtomicComponent], elementEndOffsets: [Int]?) {
+        guard components.contains(where: { $0.string.isEmpty }) else {
+            return (components, nil)
+        }
+        var atoms: [AtomicComponent] = []
+        atoms.reserveCapacity(components.count)
+        var elementEndOffsets: [Int] = []
+        elementEndOffsets.reserveCapacity(components.count)
+        for component in components {
+            if !component.string.isEmpty {
+                atoms.append(component)
+            }
+            elementEndOffsets.append(atoms.count)
+        }
+        return (atoms, elementEndOffsets)
+    }
+
+    /// Creates a string holding one component as one element.
     @inlinable
     public init(_ component: some SemanticStringComponent) {
-        self._storage = Storage(elements: [component])
+        self._storage = Storage()
+        append(component)
     }
 
     @inlinable
@@ -168,8 +250,7 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
             self._storage = Storage()
         } else {
             let component = AtomicComponent(string: value, type: .standard)
-            self._storage = Storage(elements: [component])
-            _storage.cachedComponents = [component]
+            self._storage = Storage(atoms: [component], elementEndOffsets: nil)
             _storage.cachedString = value
         }
     }
@@ -178,480 +259,6 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
 
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
-        components
-    }
-
-    // MARK: - Identifier Scopes
-
-    /// Pushes an identifier scope. While the innermost scope is non-nil,
-    /// every string appended via `append(_:type:)` / `write(_:type:)` is
-    /// stamped with that identifier. Push `nil` to open a barrier scope that
-    /// suppresses stamping (e.g. punctuation between independent spans).
-    @inlinable
-    public mutating func pushIdentifierScope(_ identifier: String?) {
-        identifierScopeStack.append(identifier)
-    }
-
-    /// Pops the innermost identifier scope. Unbalanced pops are ignored.
-    @inlinable
-    public mutating func popIdentifierScope() {
-        if !identifierScopeStack.isEmpty {
-            identifierScopeStack.removeLast()
-        }
-    }
-
-    // MARK: - Mutation
-
-    @inlinable
-    public mutating func append(_ string: String, type: SemanticType) {
-        if !string.isEmpty {
-            makeUnique()
-            invalidateCache()
-            _storage.elements.append(AtomicComponent(string: string, type: type, identifier: identifierScopeStack.last ?? nil))
-        }
-    }
-
-    @inlinable
-    public mutating func append(_ component: some SemanticStringComponent) {
-        makeUnique()
-        invalidateCache()
-        _storage.elements.append(component)
-    }
-
-    @inlinable
-    public mutating func append(_ semanticString: SemanticString) {
-        makeUnique()
-        invalidateCache()
-        _storage.elements.append(contentsOf: semanticString._storage.elements)
-    }
-
-    // MARK: - Enumeration
-
-    @inlinable
-    public func enumerate(using block: (String, SemanticType) -> Void) {
-        components.forEach { block($0.string, $0.type) }
-    }
-
-    // MARK: - Transformation
-
-    @inlinable
-    public func map(_ modifier: (AtomicComponent) -> AtomicComponent) -> SemanticString {
-        SemanticString(components: components.map(modifier))
-    }
-
-    @inlinable
-    public func replacing(_ transform: (SemanticType) -> SemanticType) -> SemanticString {
-        map { AtomicComponent(string: $0.string, type: transform($0.type), identifier: $0.identifier) }
-    }
-
-    @inlinable
-    public func replacing(from types: SemanticType..., to newType: SemanticType) -> SemanticString {
-        map { component in
-            if types.contains(component.type) {
-                return AtomicComponent(string: component.string, type: newType, identifier: component.identifier)
-            } else {
-                return component
-            }
-        }
-    }
-
-    // MARK: - Prefix and Suffix Checking
-
-    /// Returns `true` if the combined string starts with the given prefix.
-    @inlinable
-    public func hasPrefix(_ prefix: String) -> Bool {
-        string.hasPrefix(prefix)
-    }
-
-    /// Returns `true` if the combined string ends with the given suffix.
-    @inlinable
-    public func hasSuffix(_ suffix: String) -> Bool {
-        string.hasSuffix(suffix)
-    }
-
-    /// Returns `true` if the first component has the given semantic type.
-    @inlinable
-    public func starts(with type: SemanticType) -> Bool {
-        first?.type == type
-    }
-
-    /// Returns `true` if the last component has the given semantic type.
-    @inlinable
-    public func ends(with type: SemanticType) -> Bool {
-        last?.type == type
-    }
-
-    /// Returns `true` if the first component's string starts with the given prefix.
-    @inlinable
-    public func firstComponentHasPrefix(_ prefix: String) -> Bool {
-        first?.string.hasPrefix(prefix) ?? false
-    }
-
-    /// Returns `true` if the last component's string ends with the given suffix.
-    @inlinable
-    public func lastComponentHasSuffix(_ suffix: String) -> Bool {
-        last?.string.hasSuffix(suffix) ?? false
-    }
-
-    // MARK: - Trimming
-
-    /// Returns a new semantic string with leading whitespace-only components removed.
-    @inlinable
-    public func trimmingLeadingWhitespace() -> SemanticString {
-        let items = components
-        var startIndex = items.startIndex
-        while startIndex < items.endIndex,
-              items[startIndex].string.allSatisfy(\.isWhitespace) {
-            startIndex += 1
-        }
-        return SemanticString(components: Array(items[startIndex...]))
-    }
-
-    /// Returns a new semantic string with trailing whitespace-only components removed.
-    @inlinable
-    public func trimmingTrailingWhitespace() -> SemanticString {
-        let items = components
-        var endIndex = items.endIndex
-        while endIndex > items.startIndex,
-              items[endIndex - 1].string.allSatisfy(\.isWhitespace) {
-            endIndex -= 1
-        }
-        return SemanticString(components: Array(items[..<endIndex]))
-    }
-
-    /// Returns a new semantic string with both leading and trailing whitespace-only components removed.
-    @inlinable
-    public func trimmingWhitespace() -> SemanticString {
-        let items = components
-        var startIndex = items.startIndex
-        while startIndex < items.endIndex,
-              items[startIndex].string.allSatisfy(\.isWhitespace) {
-            startIndex += 1
-        }
-        var endIndex = items.endIndex
-        while endIndex > startIndex,
-              items[endIndex - 1].string.allSatisfy(\.isWhitespace) {
-            endIndex -= 1
-        }
-        return SemanticString(components: Array(items[startIndex..<endIndex]))
-    }
-
-    /// Returns a new semantic string with leading newline-only components removed.
-    @inlinable
-    public func trimmingLeadingNewlines() -> SemanticString {
-        let items = components
-        var startIndex = items.startIndex
-        while startIndex < items.endIndex,
-              items[startIndex].string.allSatisfy(\.isNewline) {
-            startIndex += 1
-        }
-        return SemanticString(components: Array(items[startIndex...]))
-    }
-
-    /// Returns a new semantic string with trailing newline-only components removed.
-    @inlinable
-    public func trimmingTrailingNewlines() -> SemanticString {
-        let items = components
-        var endIndex = items.endIndex
-        while endIndex > items.startIndex,
-              items[endIndex - 1].string.allSatisfy(\.isNewline) {
-            endIndex -= 1
-        }
-        return SemanticString(components: Array(items[..<endIndex]))
-    }
-
-    /// Returns a new semantic string with both leading and trailing newline-only components removed.
-    @inlinable
-    public func trimmingNewlines() -> SemanticString {
-        let items = components
-        var startIndex = items.startIndex
-        while startIndex < items.endIndex,
-              items[startIndex].string.allSatisfy(\.isNewline) {
-            startIndex += 1
-        }
-        var endIndex = items.endIndex
-        while endIndex > startIndex,
-              items[endIndex - 1].string.allSatisfy(\.isNewline) {
-            endIndex -= 1
-        }
-        return SemanticString(components: Array(items[startIndex..<endIndex]))
-    }
-
-    // MARK: - Subscript Access
-
-    /// Access a component by index.
-    @inlinable
-    public subscript(index: Int) -> AtomicComponent? {
-        let items = components
-        guard index >= 0, index < items.count else { return nil }
-        return items[index]
-    }
-
-    /// Access a range of components.
-    @inlinable
-    public subscript(range: Range<Int>) -> SemanticString {
-        let items = components
-        let validRange = range.clamped(to: 0 ..< items.count)
-        return SemanticString(components: Array(items[validRange]))
-    }
-
-    // MARK: - Dropping
-
-    /// Returns a new semantic string with the first `n` components removed.
-    @inlinable
-    public func dropFirst(_ n: Int = 1) -> SemanticString {
-        SemanticString(components: Array(components.dropFirst(n)))
-    }
-
-    /// Returns a new semantic string with the last `n` components removed.
-    @inlinable
-    public func dropLast(_ n: Int = 1) -> SemanticString {
-        SemanticString(components: Array(components.dropLast(n)))
-    }
-
-    /// Returns a new semantic string with components while the predicate is true.
-    @inlinable
-    public func drop(while predicate: (AtomicComponent) -> Bool) -> SemanticString {
-        SemanticString(components: Array(components.drop(while: predicate)))
-    }
-
-    // MARK: - Prefix/Suffix Extraction
-
-    /// Returns a semantic string containing the first `n` components.
-    @inlinable
-    public func prefix(_ n: Int) -> SemanticString {
-        SemanticString(components: Array(components.prefix(n)))
-    }
-
-    /// Returns a semantic string containing the last `n` components.
-    @inlinable
-    public func suffix(_ n: Int) -> SemanticString {
-        SemanticString(components: Array(components.suffix(n)))
-    }
-
-    // MARK: - Filtering
-
-    /// Returns a semantic string containing only components of the specified type.
-    @inlinable
-    public func filter(byType type: SemanticType) -> SemanticString {
-        SemanticString(components: components.filter { $0.type == type })
-    }
-
-    /// Returns a semantic string containing only components matching the predicate.
-    @inlinable
-    public func filter(_ predicate: (AtomicComponent) -> Bool) -> SemanticString {
-        SemanticString(components: components.filter(predicate))
-    }
-
-    // MARK: - Containment
-
-    /// Returns `true` if any component has the specified semantic type.
-    @inlinable
-    public func contains(type: SemanticType) -> Bool {
-        components.contains { $0.type == type }
-    }
-
-    /// Returns `true` if the combined string contains the specified substring.
-    @inlinable
-    public func contains(_ substring: String) -> Bool {
-        guard !substring.isEmpty else { return true }
-        let source = string.utf8
-        let pattern = substring.utf8
-        guard source.count >= pattern.count else { return false }
-        var sourceIndex = source.startIndex
-        let searchEnd = source.index(source.endIndex, offsetBy: -pattern.count)
-        while sourceIndex <= searchEnd {
-            if source[sourceIndex...].starts(with: pattern) {
-                return true
-            }
-            source.formIndex(after: &sourceIndex)
-        }
-        return false
-    }
-
-    // MARK: - Conditional Operations
-
-    /// Returns the semantic string with the prefix prepended, only if the condition is true.
-    @inlinable
-    public func prefixed(with prefix: String, if condition: Bool) -> SemanticString {
-        condition ? SemanticString(Standard(prefix)).appending(self) : self
-    }
-
-    /// Returns the semantic string with the prefix prepended, only if the condition is true.
-    @inlinable
-    public func prefixed(with prefix: SemanticString, if condition: Bool) -> SemanticString {
-        condition ? prefix.appending(self) : self
-    }
-
-    /// Returns the semantic string with the prefix prepended, only if the condition is true.
-    @inlinable
-    public func prefixed(with prefix: some SemanticStringComponent, if condition: Bool) -> SemanticString {
-        condition ? SemanticString(prefix).appending(self) : self
-    }
-
-    /// Returns the semantic string with the suffix appended, only if the condition is true.
-    @inlinable
-    public func suffixed(with suffix: String, if condition: Bool) -> SemanticString {
-        condition ? appending(SemanticString(Standard(suffix))) : self
-    }
-
-    /// Returns the semantic string with the suffix appended, only if the condition is true.
-    @inlinable
-    public func suffixed(with suffix: SemanticString, if condition: Bool) -> SemanticString {
-        condition ? appending(suffix) : self
-    }
-
-    /// Returns the semantic string with the suffix appended, only if the condition is true.
-    @inlinable
-    public func suffixed(with suffix: some SemanticStringComponent, if condition: Bool) -> SemanticString {
-        condition ? appending(SemanticString(suffix)) : self
-    }
-
-    /// Returns self if the condition is true, otherwise returns an empty semantic string.
-    @inlinable
-    public func `if`(_ condition: Bool) -> SemanticString {
-        condition ? self : SemanticString()
-    }
-
-    /// Returns self if the value is non-nil, otherwise returns an empty semantic string.
-    /// The closure receives the unwrapped value.
-    @inlinable
-    public func ifLet<T>(_ value: T?, @SemanticStringBuilder then: (T) -> SemanticString) -> SemanticString {
-        if let value {
-            return appending(then(value))
-        }
-        return self
-    }
-
-    // MARK: - Appending
-
-    /// Returns a new semantic string with the other string appended.
-    @inlinable
-    public func appending(_ other: SemanticString) -> SemanticString {
-        var newElements = _storage.elements
-        newElements.append(contentsOf: other._storage.elements)
-        return SemanticString(components: newElements)
-    }
-
-    /// Returns a new semantic string with the component appended.
-    @inlinable
-    public func appending(_ component: some SemanticStringComponent) -> SemanticString {
-        var newElements = _storage.elements
-        newElements.append(component)
-        return SemanticString(components: newElements)
-    }
-
-    /// Returns a new semantic string with the string appended.
-    @inlinable
-    public func appending(_ string: String, type: SemanticType = .standard) -> SemanticString {
-        guard !string.isEmpty else { return self }
-        var newElements = _storage.elements
-        newElements.append(AtomicComponent(string: string, type: type))
-        return SemanticString(components: newElements)
-    }
-
-    // MARK: - Wrapping
-
-    /// Returns a new semantic string wrapped with the given prefix and suffix.
-    @inlinable
-    public func wrapped(prefix: String, suffix: String) -> SemanticString {
-        SemanticString(Standard(prefix))
-            .appending(self)
-            .appending(Standard(suffix))
-    }
-
-    /// Returns a new semantic string wrapped with the given prefix and suffix, only if condition is true.
-    @inlinable
-    public func wrapped(prefix: String, suffix: String, if condition: Bool) -> SemanticString {
-        condition ? wrapped(prefix: prefix, suffix: suffix) : self
-    }
-
-    /// Returns a new semantic string wrapped in parentheses.
-    @inlinable
-    public func parenthesized() -> SemanticString {
-        wrapped(prefix: "(", suffix: ")")
-    }
-
-    /// Returns a new semantic string wrapped in brackets.
-    @inlinable
-    public func bracketed() -> SemanticString {
-        wrapped(prefix: "[", suffix: "]")
-    }
-
-    /// Returns a new semantic string wrapped in braces.
-    @inlinable
-    public func braced() -> SemanticString {
-        wrapped(prefix: "{", suffix: "}")
-    }
-
-    /// Returns a new semantic string wrapped in angle brackets.
-    @inlinable
-    public func angleBracketed() -> SemanticString {
-        wrapped(prefix: "<", suffix: ">")
-    }
-}
-
-// MARK: - Codable Conformance
-
-extension SemanticString: Codable {
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        let atomicComponents = try container.decode([AtomicComponent].self)
-        self.init(components: atomicComponents)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        try container.encode(components)
-    }
-}
-
-// MARK: - Hashable Conformance
-
-extension SemanticString: Hashable {
-    public static func == (lhs: SemanticString, rhs: SemanticString) -> Bool {
-        lhs.components == rhs.components
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(components)
-    }
-}
-
-// MARK: - TextOutputStream Conformance
-
-extension SemanticString: TextOutputStream {
-    @inlinable
-    public mutating func write(_ string: String) {
-        append(string, type: .standard)
-    }
-
-    @inlinable
-    public mutating func write(_ string: String, type: SemanticType) {
-        append(string, type: type)
-    }
-}
-
-// MARK: - Operators
-
-extension SemanticString {
-    @inlinable
-    public static func + (lhs: SemanticString, rhs: SemanticString) -> SemanticString {
-        lhs.appending(rhs)
-    }
-
-    @inlinable
-    public static func + (lhs: SemanticString, rhs: some SemanticStringComponent) -> SemanticString {
-        lhs.appending(rhs)
-    }
-
-    @inlinable
-    public static func += (lhs: inout SemanticString, rhs: SemanticString) {
-        lhs.append(rhs)
-    }
-
-    @inlinable
-    public static func += (lhs: inout SemanticString, rhs: some SemanticStringComponent) {
-        lhs.append(rhs)
+        _storage.atoms
     }
 }

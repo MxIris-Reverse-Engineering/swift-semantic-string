@@ -27,7 +27,7 @@ public struct DeclarationBlock: SemanticStringComponent {
     let header: any SemanticStringComponent
 
     @usableFromInline
-    let body: [any SemanticStringComponent]
+    let body: SemanticStringElements
 
     /// Creates a declaration block with sync builders.
     @inlinable
@@ -68,9 +68,11 @@ public struct DeclarationBlock: SemanticStringComponent {
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
         var result: [AtomicComponent] = []
-        // Conservative lower bound: header + space + "{" + body + break + indent + "}" ≈ body.count + 8.
-        // Array grows geometrically, so under-reserving is harmless.
-        result.reserveCapacity(body.count + 8)
+        // Reserve for the body's *components*, not its elements: the typical
+        // body is a single MemberList element carrying every member's atoms,
+        // so `body.count` would reserve almost nothing and the append loop
+        // below would reallocate geometrically through thousands of atoms.
+        result.reserveCapacity(body.totalComponentCount + 8)
 
         // Compute header/closing indent once per call. DeclarationBlock indents
         // by (level - 1), so level 0/1 produce an empty indent string that is
@@ -88,17 +90,16 @@ public struct DeclarationBlock: SemanticStringComponent {
         result.append(AtomicComponent(string: "{", type: .standard))
 
         // Body - components handle their own structure (NestedDeclaration adds BreakLine, MemberList handles its own)
-        var bodyComponents: [AtomicComponent] = []
-        bodyComponents.reserveCapacity(body.count)
-        for element in body {
-            bodyComponents.append(contentsOf: element.buildComponents())
-        }
-        result.append(contentsOf: bodyComponents)
+        let bodyStartCount = result.count
+        body.appendAllComponents(into: &result)
 
         // Closing brace with indent (only if body had content)
-        if !bodyComponents.isEmpty {
-            // Add BreakLine before closing brace if body doesn't end with newline
-            if let last = bodyComponents.last, !last.string.hasSuffix("\n") {
+        if result.count > bodyStartCount {
+            // Add BreakLine before closing brace if body doesn't end with
+            // newline. Byte-level check, deliberately: `hasSuffix("\n")` is
+            // grapheme-based and returns false for a body ending in "\r\n"
+            // (a single `Character`), which would add a spurious blank line.
+            if let last = result.last, last.string.utf8.last != UInt8(ascii: "\n") {
                 result.append(CommonAtomicComponents.breakLine)
             }
             if level > 0 && !indentString.isEmpty {
@@ -213,7 +214,7 @@ public struct NestedDeclaration: SemanticStringComponent {
 /// ```
 public struct BlockList: SemanticStringComponent {
     @usableFromInline
-    let items: [any SemanticStringComponent]
+    let items: SemanticStringElements
 
     @usableFromInline
     let _separatedByEmptyLine: Bool
@@ -235,14 +236,14 @@ public struct BlockList: SemanticStringComponent {
     /// Creates from an array of items.
     @inlinable
     public init(_ items: [SemanticString]) {
-        self.items = items
+        self.items = SemanticStringElements(items)
         self._separatedByEmptyLine = false
     }
 
     /// Creates from an array of components.
     @inlinable
-    public init<C: SemanticStringComponent>(_ items: [C]) {
-        self.items = items
+    public init<Component: SemanticStringComponent>(_ items: [Component]) {
+        self.items = SemanticStringElements(items)
         self._separatedByEmptyLine = false
     }
 
@@ -255,7 +256,7 @@ public struct BlockList: SemanticStringComponent {
     }
 
     @usableFromInline
-    init(items: [any SemanticStringComponent], separatedByEmptyLine: Bool) {
+    init(items: SemanticStringElements, separatedByEmptyLine: Bool) {
         self.items = items
         self._separatedByEmptyLine = separatedByEmptyLine
     }
@@ -269,17 +270,18 @@ public struct BlockList: SemanticStringComponent {
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
         var result: [AtomicComponent] = []
-        // Rough pattern per item: leading break + item (+ optional separator break) + trailing break.
-        result.reserveCapacity(items.count * 2 + 1)
+        // Pattern per item: leading break + item (+ optional separator break) + trailing break.
+        result.reserveCapacity(items.totalComponentCount + items.count * 2 + 1)
         var hasContent = false
-        for item in items {
-            let group = item.buildComponents()
-            guard !group.isEmpty else { continue }
+        for index in items.indices {
+            // Zero-copy slice; empty items are skipped entirely.
+            let itemComponents = items.atoms(ofElementAt: index)
+            guard !itemComponents.isEmpty else { continue }
             if _separatedByEmptyLine && hasContent {
                 result.append(CommonAtomicComponents.breakLine)
             }
             result.append(CommonAtomicComponents.breakLine)
-            result.append(contentsOf: group)
+            result.append(contentsOf: itemComponents)
             hasContent = true
         }
         if hasContent {
@@ -329,7 +331,7 @@ public struct MemberList: SemanticStringComponent {
     let level: Int
 
     @usableFromInline
-    let items: [any SemanticStringComponent]
+    let items: SemanticStringElements
 
     /// Creates from a sync result builder.
     @inlinable
@@ -349,14 +351,14 @@ public struct MemberList: SemanticStringComponent {
     @inlinable
     public init(level: Int, _ items: [SemanticString]) {
         self.level = level
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates from an array of components.
     @inlinable
-    public init<C: SemanticStringComponent>(level: Int, _ items: [C]) {
+    public init<Component: SemanticStringComponent>(level: Int, _ items: [Component]) {
         self.level = level
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates from an async result builder.
@@ -373,17 +375,18 @@ public struct MemberList: SemanticStringComponent {
         let indentComponent: AtomicComponent? = indentString.isEmpty ? nil : AtomicComponent(string: indentString, type: .standard)
 
         var result: [AtomicComponent] = []
-        // Rough pattern per item: break + indent + item, plus one trailing break.
-        result.reserveCapacity(items.count * 3 + 1)
+        // Pattern per item: break + indent + item, plus one trailing break.
+        result.reserveCapacity(items.totalComponentCount + items.count * 2 + 1)
         var hasContent = false
-        for item in items {
-            let group = item.buildComponents()
-            guard !group.isEmpty else { continue }
+        for index in items.indices {
+            // Zero-copy slice; empty items are skipped entirely.
+            let itemComponents = items.atoms(ofElementAt: index)
+            guard !itemComponents.isEmpty else { continue }
             result.append(CommonAtomicComponents.breakLine)
             if let indentComponent {
                 result.append(indentComponent)
             }
-            result.append(contentsOf: group)
+            result.append(contentsOf: itemComponents)
             hasContent = true
         }
         if hasContent {
@@ -436,7 +439,7 @@ public struct Rows: SemanticStringComponent {
     let level: Int
 
     @usableFromInline
-    let items: [any SemanticStringComponent]
+    let items: SemanticStringElements
 
     /// Creates from a sync result builder.
     @inlinable
@@ -456,14 +459,14 @@ public struct Rows: SemanticStringComponent {
     @inlinable
     public init(level: Int, _ items: [SemanticString]) {
         self.level = level
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates from an array of components.
     @inlinable
     public init<Component: SemanticStringComponent>(level: Int, _ items: [Component]) {
         self.level = level
-        self.items = items
+        self.items = SemanticStringElements(items)
     }
 
     /// Creates from an async result builder.
@@ -480,20 +483,21 @@ public struct Rows: SemanticStringComponent {
         let indentComponent: AtomicComponent? = indentString.isEmpty ? nil : AtomicComponent(string: indentString, type: .standard)
 
         var result: [AtomicComponent] = []
-        // Rough pattern per non-first sub-row: break + indent + item; first sub-row
+        // Pattern per non-first sub-row: break + indent + item; first sub-row
         // is opened by the outer container's leading separator.
-        result.reserveCapacity(items.count * 3)
+        result.reserveCapacity(items.totalComponentCount + items.count * 2)
         var hasContent = false
-        for item in items {
-            let group = item.buildComponents()
-            guard !group.isEmpty else { continue }
+        for index in items.indices {
+            // Zero-copy slice; empty sub-rows are skipped entirely.
+            let itemComponents = items.atoms(ofElementAt: index)
+            guard !itemComponents.isEmpty else { continue }
             if hasContent {
                 result.append(CommonAtomicComponents.breakLine)
                 if let indentComponent {
                     result.append(indentComponent)
                 }
             }
-            result.append(contentsOf: group)
+            result.append(contentsOf: itemComponents)
             hasContent = true
         }
         return result

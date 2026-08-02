@@ -6,6 +6,8 @@ A Swift library for building semantically typed strings using a SwiftUI-like dec
 
 - Swift 6.2+
 - No external dependencies
+- Apple platforms: macOS 10.15+, iOS 13+, macCatalyst 13+, tvOS 13+, watchOS 6+, visionOS 1+
+- Also builds on Linux and Windows. The only system dependency is a platform locking primitive (`os_unfair_lock`, `pthread_mutex_t`, or `SRWLOCK`), selected behind `#if canImport`.
 
 ## Installation
 
@@ -273,6 +275,85 @@ let rest = ss.dropFirst()
 let data = try JSONEncoder().encode(semanticString)
 let decoded = try JSONDecoder().decode(SemanticString.self, from: data)
 ```
+
+### Zero-length components are not stored
+
+A component whose `string` is empty contributes nothing to any rendering, and building one through a component (`Keyword("")`) has always discarded it. Constructing a string from atomic components directly does the same, so both ways of assembling the same content agree:
+
+```swift
+let components = [
+    AtomicComponent(string: "a", type: .standard),
+    AtomicComponent(string: "", type: .standard),   // dropped
+    AtomicComponent(string: "b", type: .standard),
+]
+SemanticString(components: components).count   // 2, not 3
+```
+
+This holds on every construction path — hand-built arrays, streamed appends, decoding, and the flattening of custom components whose `buildComponents()` emits an empty atom. A zero-length entry does not survive into `count`, `components`, `isEmpty`, subscripting, `prefix` / `suffix`, equality, hashing, or a `Codable` round trip (which is therefore always idempotent: encoded output never contains an empty component). The emptiness measures all coincide: `isEmpty` ⟺ `count == 0` ⟺ `first == nil` ⟺ `string.isEmpty`, and equal values agree on all of them. Callers that pair a `map` result positionally against the source array should filter empties themselves first, and callers migrating from the element-tree storage should note that `map`-ing a component to `""` now removes it (shifting indices) instead of keeping an empty placeholder. The same applies across versions: a payload encoded by the element-tree version that contains zero-length components decodes here with those entries dropped — component indices recorded alongside such a payload (a span map, a selection anchor, a decoration table) shift past every dropped entry and must be re-derived from the decoded value.
+
+Empty atoms contribute no text directly, and container *emptiness* decisions see the filtered form: an item or element consisting only of empty atoms produces no row in `MemberList`/`Rows`/`BlockList`, no separator in `Group`/`Joined`/`ForEach`, and no braces content in `DeclarationBlock`. This unifies two shapes that historically behaved differently — `Keyword("")` (whose default `buildComponents()` returns nothing) was always skipped, while a custom component emitting one empty atom was rendered as an empty row. Both now flatten to the same nothing and get the same treatment.
+
+### Components are flattened when they are appended
+
+A component's `buildComponents()` runs at the moment the component is appended or placed in a container — not when the result is rendered. Its output is copied into storage and the component itself is released. `buildComponents()` takes no context and is expected to be deterministic, so the flattening can only ever be done once, and doing it eagerly keeps every read path free of side effects.
+
+This matters if a custom component reads mutable state that is resolved *after* assembly — a deferred-resolution pattern where a printer builds the structure first and fills in names, offsets, or addresses afterwards:
+
+```swift
+final class LateBoundName { var value = "placeholder" }
+
+struct NameReference: SemanticStringComponent {
+    let holder: LateBoundName
+    func buildComponents() -> [AtomicComponent] {
+        [AtomicComponent(string: holder.value, type: .standard)]
+    }
+}
+
+let holder = LateBoundName()
+let group = Group([SemanticString(NameReference(holder: holder))])
+holder.value = "resolved"
+SemanticString(group).string   // "placeholder" — captured at append time
+```
+
+The element-tree storage retained the component and called `buildComponents()` at render time, so the same code produced `"resolved"`. Resolve such values **before** appending them, or store a `SemanticString` placeholder and rebuild the container once the value is known.
+
+## Read-Only Content: `FrozenSemanticString`
+
+`SemanticString` is the *builder* — composable, streamable, mutable. When a string is fully built and will only ever be read (rendered, encoded, exported, searched), freeze it:
+
+```swift
+let frozen = declaration.frozen()
+
+print(frozen.string)   // free — the full text is the storage
+
+frozen.enumerateSpans { spanText, type, identifier in
+    render(spanText, as: type, linkingTo: identifier)
+}
+```
+
+Freezing collapses the per-token component representation into three flat allocations:
+
+| Storage | Contents |
+|---------|----------|
+| `text: String` | The complete UTF-8 text, stored exactly once |
+| `spans: [Span]` | 8 bytes per token — UTF-8 `length`, semantic `typeCode`, `identifierIndex` |
+| `identifierTable: [String]` | Interned span identifiers, referenced 1-based (`0` means none) |
+
+Every stored property is `let`, so `FrozenSemanticString` is unconditionally `Sendable` with no locks and no copy-on-write. Freezing is one-way by design: there is no mutation API and no conversion back, which pins the "build, then read-only" lifecycle at the type level.
+
+On a large corpus (3.46M tokens, 27.3 MB of text) this cut resident memory by roughly 78% against the per-token representation, with printing time unchanged.
+
+Notes:
+
+- Use `enumerateSpans(_:)` on hot paths. `frozen.components` materializes `[AtomicComponent]` and recreates exactly the per-token allocation cost freezing removed — it exists for compatibility and tests.
+- Every span boundary falls on a Unicode *scalar* boundary — that is the guarantee to build on. Grapheme cluster (`Character`) alignment holds only within a token: `Span.length` is a `UInt16`, so a token longer than 65535 UTF-8 bytes is split into consecutive spans carrying the same type and identifier, at cluster boundaries (a single cluster that itself exceeds 65535 bytes degrades to scalar boundaries). Boundaries *between* tokens sit wherever the builder put the tokens, so adjacent tokens can split one `Character` — e.g. a keyword followed by a combining mark typed as a separate token. Consumers that concatenate text see no difference; styling or selection code that needs cluster-aligned runs must merge adjacent spans, and a token-by-token count comparison against `SemanticString.components` will see long-token splits. Note that the split also breaks value round trips: rebuilding a `SemanticString` from `frozen.components` after a long-token split produces a value that is not `==` to the source and hashes differently, even though its `string` matches — across a freeze/thaw boundary, compare rendered text (or re-freeze and compare snapshots), not `SemanticString` values.
+- `FrozenSemanticString` conforms to `Codable` with a columnar encoding (one string plus four homogeneous arrays) an order of magnitude smaller on the wire than `SemanticString`'s array-of-objects form. The two formats are intentionally **not** interchangeable — both ends of any persistence or cross-process channel must agree on which one they use.
+- `SemanticType` values encode to stable `UInt8` codes. Codes are assigned append-only, and a code from a newer version decodes as `.other` rather than failing. Note that resolving to `.other` is lossy in one direction: a value decoded from a newer encoder keeps the original code in `spans`, but round-tripping it through `components` and re-freezing rewrites it to `.other`'s code. Forward and backward compatible readers should walk `enumerateSpans` or `spans` rather than `components`.
+- Freeze at a storage boundary — once the string is final. There is deliberately no way to compact a `SemanticString` in place and keep building with it: the element boundaries a builder exposes are semantic (a container like `MemberList` treats one element as one row), and collapsing them silently changes layout. `frozen()` gives you the compact representation with that lifecycle enforced by the type.
+- `frozen()` never inflates the value it is called on, or any value sharing its storage. The components *are* the storage (there is no component cache to fill), and the text reuses the string cache only when a previous render already paid for it — otherwise it is computed locally and not published.
+- Decoding validates the structural invariants a reader would otherwise trap on: column counts must agree, span lengths must cover the text exactly, no span may be zero-length, and every span boundary must fall on a Unicode scalar boundary. Two fields are deliberately kept verbatim rather than rejected — an unknown `typeCode` resolves to `.other` and an out-of-range identifier index resolves to `nil` in every reader — so forward-compatible payloads (and this type's own encoder output) stay decodable. The unchecked `init(text:spans:identifierTable:)` trusts the caller instead — use it only for parts you produced yourself. Decoding is the path for anything that arrived from another process; note that validation cannot bound what `JSONDecoder` itself materializes while parsing, so cap the byte size of untrusted payloads before handing them to a decoder.
+- Equality and hashing compare rendered content, not storage layout: `identifierTable` shape (duplicate or unreferenced entries, which a decoded payload keeps as they arrived) does not affect them. Two *different* `SemanticString`s can still freeze to equal snapshots, because a token over 65535 bytes and the same text split across adjacent same-type tokens produce identical spans — compare the source strings when token identity matters.
+- `frozen()` interns identifiers by `String` equality, which is Unicode-canonical: two identifiers whose bytes differ but compare canonically equal (an NFC and an NFD spelling of the same name) collapse into one table entry, and every span referencing either resolves to whichever spelling was interned first. `SemanticString`'s own `Codable` path preserves identifier bytes exactly; freezing is the only path that can rewrite them. Mangled names are ASCII and unaffected — if identifiers can carry non-ASCII, keep them in a single normalization form before building.
 
 ## License
 
