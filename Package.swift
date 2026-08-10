@@ -63,14 +63,32 @@ let package = Package(
             name: "Semantic",
             targets: ["Semantic"],
         ),
+        // The shared `Transformer` namespace and `Module` protocol. Concrete
+        // transformers ship with the library that owns their vocabulary, and
+        // all extend this one namespace so a consumer importing several of
+        // them still writes `Transformer.<Module>` unqualified.
+        .library(
+            name: "OutputTransformer",
+            targets: ["OutputTransformer"],
+        ),
     ],
     targets: [
         .target(
             name: "Semantic",
         ),
+        // Holds only the `Transformer` namespace and the `Module` protocol.
+        // Concrete transformers live with their subject matter, so this target
+        // has no dependency of its own — not even on `Semantic`.
+        .target(
+            name: "OutputTransformer",
+        ),
         .testTarget(
             name: "SemanticTests",
             dependencies: ["Semantic"],
+        ),
+        .testTarget(
+            name: "OutputTransformerTests",
+            dependencies: ["OutputTransformer"],
         ),
     ],
 )

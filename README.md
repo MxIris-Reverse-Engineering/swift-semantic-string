@@ -1,6 +1,24 @@
 # swift-semantic-string
 
-A Swift library for building semantically typed strings using a SwiftUI-like declarative syntax. Each piece of text carries a semantic type (keyword, type name, variable, etc.), enabling downstream consumers to apply syntax highlighting, accessibility annotations, or any type-aware rendering.
+Semantic markup and post-processing for rendered output.
+
+The package ships two products:
+
+| Product | What it does |
+|---|---|
+| `Semantic` | Builds semantically typed strings with a SwiftUI-like declarative syntax. Each piece of text carries a semantic type (keyword, type name, variable, …), so downstream consumers can apply syntax highlighting, accessibility annotations, or any type-aware rendering. No dependencies. |
+| `OutputTransformer` | The shared `Transformer` namespace and its `Module` protocol — the contract a post-processing step implements (declare parameters, take an input, return an output, be enabled or not). No dependencies, not even on `Semantic`. |
+
+`OutputTransformer` holds no concrete transformer. A transformer's tokens carry the
+vocabulary of whatever it describes (`bitsNeededForTag`, `ivar offset`), which belongs to
+the library that owns that domain rather than to a general-purpose string package. The
+concrete modules therefore ship elsewhere and all extend this one namespace, so a consumer
+importing several of them still writes `Transformer.CType` unqualified:
+
+| Modules | Home |
+|---|---|
+| `SwiftFieldOffset`, `SwiftVTableOffset`, `SwiftMemberAddress`, `SwiftTypeLayout`, `SwiftEnumLayout` | [MachOSwiftSection](https://github.com/MxIris-Reverse-Engineering/MachOSwiftSection) |
+| `CType`, `ObjCIvarOffset` | [MachOObjCSection](https://github.com/MxIris-Reverse-Engineering/MachOObjCSection) |
 
 ## Requirements
 
@@ -15,11 +33,12 @@ A Swift library for building semantically typed strings using a SwiftUI-like dec
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string.git", from: "0.1.0")
+    .package(url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string.git", from: "0.3.0")
 ]
 ```
 
-Then add `"Semantic"` as a dependency of your target.
+Then add `"Semantic"` — and `"OutputTransformer"` if you are writing a transformer
+module of your own — as dependencies of your target.
 
 ## Quick Start
 
