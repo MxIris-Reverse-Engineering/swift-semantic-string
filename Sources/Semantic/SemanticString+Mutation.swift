@@ -51,18 +51,44 @@ extension SemanticString {
     ///
     /// Zero-length atoms in the flattening are dropped; a flattening that
     /// drops to nothing is a complete no-op (see `appendAtomElement`).
+    ///
+    /// A flattening with no zero-length atoms — every library composite's,
+    /// and any well-behaved third-party one's — is appended in bulk, and
+    /// when this value holds no atoms yet the array is **adopted** outright
+    /// instead of copied: `SemanticString(composite)`, `asSemanticString()`,
+    /// and `joined(separator:)` then pay one flattening and no second copy
+    /// (measured 0.32 ms → 0.19 ms for a 10k-atom `Group`). The adopted
+    /// buffer may still be shared with the composite — `ForEach` and `IfLet`
+    /// retain their flattening — and the array's own copy-on-write isolates
+    /// the next mutation, which is the copy that used to be unconditional.
+    /// Emptiness is judged on `atoms` alone: a value carrying only
+    /// zero-length element slots adopts too, and `closeElement` extends its
+    /// existing table exactly as the filtering loop would.
     @usableFromInline
     internal mutating func appendComponentElement(flattening builtComponents: [AtomicComponent]) {
-        guard builtComponents.contains(where: { !$0.string.isEmpty }) else {
+        if builtComponents.isEmpty {
+            return
+        }
+        if builtComponents.contains(where: { $0.string.isEmpty }) {
+            guard builtComponents.contains(where: { !$0.string.isEmpty }) else {
+                return
+            }
+            makeUniqueForMutation()
+            var appendedAtomCount = 0
+            for atomicComponent in builtComponents where !atomicComponent.string.isEmpty {
+                _storage.atoms.append(atomicComponent)
+                appendedAtomCount += 1
+            }
+            _storage.closeElement(appendedAtomCount: appendedAtomCount)
             return
         }
         makeUniqueForMutation()
-        var appendedAtomCount = 0
-        for atomicComponent in builtComponents where !atomicComponent.string.isEmpty {
-            _storage.atoms.append(atomicComponent)
-            appendedAtomCount += 1
+        if _storage.atoms.isEmpty {
+            _storage.atoms = builtComponents
+        } else {
+            _storage.atoms.append(contentsOf: builtComponents)
         }
-        _storage.closeElement(appendedAtomCount: appendedAtomCount)
+        _storage.closeElement(appendedAtomCount: builtComponents.count)
     }
 
     /// Appends a string as one element, stamped with the innermost
@@ -148,25 +174,19 @@ extension SemanticString {
     /// empty composite) is a complete no-op: no atoms, no element slot, no
     /// cache drop — containers skip empty elements anyway, so the slot was
     /// never observable (sixth round).
+    ///
+    /// Dispatches once through `_appendAsElement(into:)`, so a component
+    /// reaching here as an existential or through an unspecialized generic
+    /// takes the path its static type would: plain leaves the
+    /// zero-allocation path, `AtomicComponent` the identifier-preserving
+    /// path, a `SemanticString` the one-element bulk path, everything else
+    /// `buildComponents()`. This replaced two `as?` probes plus a one-element
+    /// array per plain leaf — measured 121.9 ms → 69.8 ms for 800k
+    /// existential leaf appends against a 44 ms static floor
+    /// (`docs/AppendPathPerformance.md`).
     @inlinable
     public mutating func append(_ component: some SemanticStringComponent) {
-        if let atomicComponent = component as? AtomicComponent {
-            appendAtomElement(atomicComponent)
-            return
-        }
-        // A `SemanticString` reached as a component — every builder child is
-        // one — is one element, like any other component here. Its atoms
-        // already uphold the "no zero-length components" invariant, so they
-        // are appended in bulk instead of through the per-atom filter loop.
-        if let semanticString = component as? SemanticString {
-            appendSemanticStringElement(semanticString)
-            return
-        }
-        // No plain-leaf existential fast path here, deliberately: measured, a
-        // protocol-conformance cast per component costs more than the
-        // one-element array `buildComponents()` allocates. Statically typed
-        // appends already skip both.
-        appendComponentElement(flattening: component.buildComponents())
+        component._appendAsElement(into: &self)
     }
 
     /// Appends another string's contents as **one element**, in bulk.

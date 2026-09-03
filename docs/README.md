@@ -19,6 +19,7 @@
 - [SeventhReviewFixes.md](SeventhReviewFixes.md) —— 第七轮：对 15 项发现逐条走完「四问」核验（能否复现 / `main` 是否也有 / 值不值得修 / 以前是否修过），全部属实——7 项待修、5 项前几轮已裁决、1 项 `main` 固有、1 项可选加固。本批只落地文档诚实化：`PlainAtomicSemanticComponent` 协议文档改为实话（`assert` 在 `-O` 下被编译掉，违约实现在 release 静默发布内容分叉）、AGENTS.md 三处（零长槽说法与第六轮自相矛盾、边界表物化的永久代价、被实测证伪的「粒度不可能在路径间分叉」）、README 补「组件在 append 时展平」的迁移说明。第二批为正确性修复：`FrozenSemanticString` 零长 span 在读取路径全部变响（第三轮补的「三向」漏了这一向，而解码器一直在校验它，两个入口互相矛盾；修在三个消费点共用的 `spanUpperBound` 上，一处覆盖整类），`ConcurrencyTests` 补上它自称拥有却缺失的覆盖（泛型 append 漏斗、真正 race 缓存填充的冻结）。性能修复与可选加固在文末列明。
 
 - [EighthReviewFindings.md](EighthReviewFindings.md) —— 第八轮：又一轮 15 项发现的四问核验。**该轮评审读的是陈旧引用 `4bf98e3`，而分支实际 head 是 `2b07c0a`**，因此 5 项评的是已修代码、2 项评的是第七轮刚写下的裁决。核验在本地 tip 上重做：7 项待修（元素切片双索引基准、`components` 时间界在 release 下失效、32 位条带散列测试无效、`#if` 链缺 `#else #error`、`appendMatrix` 的四种组合实为一种、条件组合子文档失实、`-Ounchecked` 下 10 项 exit test 转红），1 项**误报**（冷内存回归，三组独立测量方向相反），其余为已修或已裁决。含三个测试的变异测试结果——注入它们各自声称能抓的回归后仍然全绿。
+- [AppendPathPerformance.md](AppendPathPerformance.md) —— 第九批：append 路径与字符串拼接的四项性能优化，无行为变更。`string` 拼接改为把每个 token 的 UTF-8 拷进一个精确预留的字节缓冲再一次性解码（100 万原子 28.2 → 10.0 ms，`frozen()` 冷路径 36.2 → 18.6 ms）；`append(some SemanticStringComponent)` 改为经协议要求 `_appendAsElement(into:)` 一次分派，取代两次 `as?` 探测加每个叶子一个单元素数组（存在量 append 121.9 → 69.8 ms，静态下界 44 ms）；result builder 的累积参数改 `consuming`（8 语句块 199 → 92 ms）；复合展平在空目标上直接接管数组（`SemanticString(Group(rows))` 0.31 → 0.18 ms）。已裁决清单 S3 的差距收回约三分之一，S4 的分叉形态随之改变（builder 与 `append` 两边一致，override 只在复合组件直接调用 `buildComponents()` 处被采纳）。
 
 ## 已裁决清单
 

@@ -115,19 +115,43 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
         return result
     }
 
-    /// Concatenates component strings in a single reserved allocation.
+    /// Concatenates component strings by copying their UTF-8 bytes into one
+    /// exactly-reserved buffer and decoding it once.
+    ///
+    /// `String.append` runs its general path per token — capacity checks,
+    /// ASCII-flag maintenance, bridging probes. Copying raw bytes and
+    /// decoding once measured 2.8× faster on a million tokens (28.2 ms →
+    /// 10.0 ms; `docs/AppendPathPerformance.md`). Every token is a `String`,
+    /// so the bytes are valid UTF-8 by construction, decoding cannot fail,
+    /// and the result is byte-identical to the token-wise concatenation.
+    ///
+    /// `append(contentsOf:)` rather than positional `initialize(from:)` into
+    /// an uninitialized buffer, deliberately: the byte counts are taken in
+    /// one pass and the bytes in another, and a positional write is only
+    /// memory-safe if the two agree for every representation a token can
+    /// have, bridged strings included. The bounded form costs about 25% more
+    /// (7.9 ms positional) and cannot write out of bounds whatever a token
+    /// does. `String(unsafeUninitializedCapacity:)` would also drop the
+    /// final copy, but requires macOS 11 / iOS 14, above this package's
+    /// deployment targets.
     @usableFromInline
     internal static func concatenated(_ atomicComponents: [AtomicComponent]) -> String {
         var utf8ByteCount = 0
         for atomicComponent in atomicComponents {
             utf8ByteCount += atomicComponent.string.utf8.count
         }
-        var computed = ""
-        computed.reserveCapacity(utf8ByteCount)
-        for atomicComponent in atomicComponents {
-            computed += atomicComponent.string
+        if utf8ByteCount == 0 {
+            return ""
         }
-        return computed
+        var utf8Bytes: [UInt8] = []
+        utf8Bytes.reserveCapacity(utf8ByteCount)
+        for atomicComponent in atomicComponents {
+            var tokenString = atomicComponent.string
+            tokenString.withUTF8 { tokenUTF8 in
+                utf8Bytes.append(contentsOf: tokenUTF8)
+            }
+        }
+        return String(decoding: utf8Bytes, as: UTF8.self)
     }
 
     // MARK: - Collection-like Properties
@@ -260,5 +284,15 @@ public struct SemanticString: Sendable, ExpressibleByStringLiteral, SemanticStri
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
         _storage.atoms
+    }
+
+    /// A `SemanticString` reached as a component — every builder child is
+    /// one — is **one** element, like any other component appended through
+    /// `append(_ component: some SemanticStringComponent)`. The typed
+    /// `append(_ semanticString:)` overload splices element-wise instead;
+    /// see invariant 1 in `AGENTS.md`.
+    @inlinable
+    public func _appendAsElement(into semanticString: inout SemanticString) {
+        semanticString.appendSemanticStringElement(self)
     }
 }
