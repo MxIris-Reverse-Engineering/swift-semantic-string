@@ -4,6 +4,7 @@
 - **创建日期**: 2026-09-03
 - **最后更新**: 2026-09-03
 - **档位**: 轻量档（无公开行为变更；唯一的 API 面变化是给 `SemanticStringComponent` 增加一个**带默认实现**的下划线要求，源码兼容）
+- **配套文档**: [AppendPathPerformanceExplained.md](AppendPathPerformanceExplained.md)（面向任何开发者的讲解版）
 
 ## 摘要
 
