@@ -33,7 +33,7 @@ importing several of them still writes `Transformer.CType` unqualified:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string.git", from: "0.3.0")
+    .package(url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string.git", from: "0.4.0")
 ]
 ```
 
@@ -373,6 +373,37 @@ Notes:
 - Decoding validates the structural invariants a reader would otherwise trap on: column counts must agree, span lengths must cover the text exactly, no span may be zero-length, and every span boundary must fall on a Unicode scalar boundary. Two fields are deliberately kept verbatim rather than rejected — an unknown `typeCode` resolves to `.other` and an out-of-range identifier index resolves to `nil` in every reader — so forward-compatible payloads (and this type's own encoder output) stay decodable. The unchecked `init(text:spans:identifierTable:)` trusts the caller instead — use it only for parts you produced yourself. Decoding is the path for anything that arrived from another process; note that validation cannot bound what `JSONDecoder` itself materializes while parsing, so cap the byte size of untrusted payloads before handing them to a decoder.
 - Equality and hashing compare rendered content, not storage layout: `identifierTable` shape (duplicate or unreferenced entries, which a decoded payload keeps as they arrived) does not affect them. Two *different* `SemanticString`s can still freeze to equal snapshots, because a token over 65535 bytes and the same text split across adjacent same-type tokens produce identical spans — compare the source strings when token identity matters.
 - `frozen()` interns identifiers by `String` equality, which is Unicode-canonical: two identifiers whose bytes differ but compare canonically equal (an NFC and an NFD spelling of the same name) collapse into one table entry, and every span referencing either resolves to whichever spelling was interned first. `SemanticString`'s own `Codable` path preserves identifier bytes exactly; freezing is the only path that can rewrite them. Mangled names are ASCII and unaffected — if identifiers can carry non-ASCII, keep them in a single normalization form before building.
+
+## Visibility Regions: Print Once, Show Any Option Set
+
+When what a printer shows depends on display options — offset comments on or off, synthesized members hidden or not — it can print everything once and record, for each piece, under which options that piece is shown. A caller then *projects* the one printing onto any set of options and gets exactly the text the printer would have produced with them. Flipping an option costs a projection, not a reprint.
+
+```swift
+@SemanticStringBuilder
+var printed: SemanticString {
+    Keyword("var")
+    Space()
+    Variable("count")
+    VisibilityRegion(.enabled("showOffsets")) {
+        Space()
+        Comment("offset: 0x10")
+    }
+}
+
+let (text, regions) = printed.frozen().separatingVisibilityRegions()
+
+print(regions.projection(of: text) { $0 == "showOffsets" }.text.string) // "var count // offset: 0x10"
+print(regions.projection(of: text) { _ in false }.text.string)          // "var count"
+```
+
+- A `VisibilityCondition` is built from named options: `.enabled(_:)`, `.disabled(_:)`, `.all(_:)`, `.any(_:)`, `.always`, `.never`. Nested regions combine with `.all`.
+- The condition travels in each atom's `identifier`, so the marked string renders byte for byte like printing everything. `separatingVisibilityRegions()` restores the original identifiers and returns the regions as a table of UTF-8 ranges; do not read a marked string's identifiers yourself.
+- Wrap the optional content itself, not the container around it. `MemberList`, `BlockList`, `Rows`, `Joined`, `Group`, `ForEach`, `NestedDeclaration` and `DeclarationBlock` carry their items' conditions onto the line breaks, indentation, separators, braces and headers they emit, so a projection lays out like printing only the visible items, including when every item of a group disappears. Two layouts fall outside that: `ForEachIndexed`, whose content arranges itself from `isFirst` / `isLast`, and a `DeclarationBlock` body whose last visible byte changes with the options, since the block decides its closing line break from the body as printed in full.
+- `projectedUTF8Offset(ofOriginalUTF8Offset:)` maps an offset in the separated text (a search hit, say) into the projection, or returns `nil` when the projection removed that byte.
+- For output written piece by piece rather than composed, `markAtoms(from:visibleUnder:)` conditions every atom appended after a given index.
+- Without regions nothing changes: the output is the same as before, and a container spends one look at each item's first atom.
+
+The design and its validation are in [docs/VisibilityRegions.md](docs/VisibilityRegions.md).
 
 ## License
 

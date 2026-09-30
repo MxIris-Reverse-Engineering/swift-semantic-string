@@ -371,6 +371,25 @@ struct VisibilityRegionTests {
 
     // MARK: - Offsets
 
+    /// The example in README.md, verbatim.
+    @SemanticStringBuilder
+    private static var readmeExample: SemanticString {
+        Keyword("var")
+        Space()
+        Variable("count")
+        VisibilityRegion(.enabled("showOffsets")) {
+            Space()
+            Comment("offset: 0x10")
+        }
+    }
+
+    @Test("the README's example projects as it says")
+    func readmeExampleProjection() {
+        let (text, regions) = Self.readmeExample.frozen().separatingVisibilityRegions()
+        #expect(regions.projection(of: text) { $0 == "showOffsets" }.text.string == "var count // offset: 0x10")
+        #expect(regions.projection(of: text) { _ in false }.text.string == "var count")
+    }
+
     @Test("every surviving byte maps to the same byte in the projection; removed bytes map to nothing")
     func offsetMapping() {
         let marked = SemanticString {
