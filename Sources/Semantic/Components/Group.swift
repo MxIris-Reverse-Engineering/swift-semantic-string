@@ -54,15 +54,20 @@ public struct Group: SemanticStringComponent {
             var result: [AtomicComponent] = []
             result.reserveCapacity(items.totalComponentCount + sepComponents.count * max(items.count - 1, 0))
             var needsSeparator = false
+            // A separator is visible when the item after it is and some item
+            // before it is (see `VisibilityLayout`).
+            var earlierItemsCondition: VisibilityCondition?
             for index in items.indices {
                 // Zero-copy slice of the element's components; empty items
                 // are skipped without emitting a separator around nothing.
                 let itemComponents = items.atoms(ofElementAt: index)
                 guard !itemComponents.isEmpty else { continue }
+                let itemCondition = VisibilityLayout.condition(ofItem: itemComponents)
                 if needsSeparator {
-                    result.append(contentsOf: sepComponents)
+                    result.append(contentsOf: VisibilityLayout.decorations(sepComponents, visibleUnder: VisibilityLayout.both(itemCondition, earlierItemsCondition)))
                 }
                 result.append(contentsOf: itemComponents)
+                earlierItemsCondition = needsSeparator ? VisibilityLayout.either(earlierItemsCondition, itemCondition) : itemCondition
                 needsSeparator = true
             }
             return result

@@ -38,6 +38,13 @@ public struct AtomicComponent: AtomicSemanticComponent, Hashable {
         }
         return [self]
     }
+
+    /// Keeps `identifier`: the erased leaf takes the exact-match path even
+    /// when it arrives as an existential.
+    @inlinable
+    public func _appendAsElement(into semanticString: inout SemanticString) {
+        semanticString.appendAtomElement(self)
+    }
 }
 
 extension AtomicComponent: Codable {

@@ -8,5 +8,5 @@ DerivedData/
 .netrc
 .swiftpm
 
-# Claude Code linked worktrees live here; they are full checkouts, not sources.
-/.claude/worktrees/
+# Agent worktrees live here; they are full checkouts, not sources.
+/.worktrees/

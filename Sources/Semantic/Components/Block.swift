@@ -95,20 +95,42 @@ public struct DeclarationBlock: SemanticStringComponent {
 
         // Closing brace with indent (only if body had content)
         if result.count > bodyStartCount {
+            // A body visible only under a condition takes the closing line
+            // break and indentation with it (see `VisibilityLayout`).
+            let bodyCondition = Self.visibilityCondition(ofBody: body)
             // Add BreakLine before closing brace if body doesn't end with
             // newline. Byte-level check, deliberately: `hasSuffix("\n")` is
             // grapheme-based and returns false for a body ending in "\r\n"
             // (a single `Character`), which would add a spurious blank line.
             if let last = result.last, last.string.utf8.last != UInt8(ascii: "\n") {
-                result.append(CommonAtomicComponents.breakLine)
+                result.append(VisibilityLayout.decoration(CommonAtomicComponents.breakLine, visibleUnder: bodyCondition))
             }
             if level > 0 && !indentString.isEmpty {
-                result.append(AtomicComponent(string: indentString, type: .standard))
+                result.append(VisibilityLayout.decoration(AtomicComponent(string: indentString, type: .standard), visibleUnder: bodyCondition))
             }
         }
         result.append(AtomicComponent(string: "}", type: .standard))
 
         return result
+    }
+
+    /// That some element of the body is visible; `nil` (always) as soon as
+    /// one element is unconditionally so.
+    @inlinable
+    static func visibilityCondition(ofBody body: SemanticStringElements) -> VisibilityCondition? {
+        var bodyCondition: VisibilityCondition?
+        var hasContent = false
+        for index in body.indices {
+            let atoms = body.atoms(ofElementAt: index)
+            guard !atoms.isEmpty else { continue }
+            let elementCondition = VisibilityLayout.condition(ofItem: atoms)
+            bodyCondition = hasContent ? VisibilityLayout.either(bodyCondition, elementCondition) : elementCondition
+            hasContent = true
+            if bodyCondition == nil {
+                return nil
+            }
+        }
+        return bodyCondition
     }
 }
 
@@ -166,7 +188,7 @@ public struct NestedDeclaration: SemanticStringComponent {
         guard !built.isEmpty else { return [] }
         var result: [AtomicComponent] = []
         result.reserveCapacity(built.count + 1)
-        result.append(CommonAtomicComponents.breakLine)
+        result.append(VisibilityLayout.decoration(CommonAtomicComponents.breakLine, visibleUnder: VisibilityLayout.condition(ofItem: built)))
         result.append(contentsOf: built)
         return result
     }
@@ -273,19 +295,24 @@ public struct BlockList: SemanticStringComponent {
         // Pattern per item: leading break + item (+ optional separator break) + trailing break.
         result.reserveCapacity(items.totalComponentCount + items.count * 2 + 1)
         var hasContent = false
+        // That some item so far is visible (see `VisibilityLayout`); `nil`
+        // is always, which is all it ever is without regions.
+        var earlierItemsCondition: VisibilityCondition?
         for index in items.indices {
             // Zero-copy slice; empty items are skipped entirely.
             let itemComponents = items.atoms(ofElementAt: index)
             guard !itemComponents.isEmpty else { continue }
+            let itemCondition = VisibilityLayout.condition(ofItem: itemComponents)
             if _separatedByEmptyLine && hasContent {
-                result.append(CommonAtomicComponents.breakLine)
+                result.append(VisibilityLayout.decoration(CommonAtomicComponents.breakLine, visibleUnder: VisibilityLayout.both(itemCondition, earlierItemsCondition)))
             }
-            result.append(CommonAtomicComponents.breakLine)
+            result.append(VisibilityLayout.decoration(CommonAtomicComponents.breakLine, visibleUnder: itemCondition))
             result.append(contentsOf: itemComponents)
+            earlierItemsCondition = hasContent ? VisibilityLayout.either(earlierItemsCondition, itemCondition) : itemCondition
             hasContent = true
         }
         if hasContent {
-            result.append(CommonAtomicComponents.breakLine)
+            result.append(VisibilityLayout.decoration(CommonAtomicComponents.breakLine, visibleUnder: earlierItemsCondition))
         }
         return result
     }
@@ -378,19 +405,24 @@ public struct MemberList: SemanticStringComponent {
         // Pattern per item: break + indent + item, plus one trailing break.
         result.reserveCapacity(items.totalComponentCount + items.count * 2 + 1)
         var hasContent = false
+        // That some item so far is visible (see `VisibilityLayout`); `nil`
+        // is always, which is all it ever is without regions.
+        var earlierItemsCondition: VisibilityCondition?
         for index in items.indices {
             // Zero-copy slice; empty items are skipped entirely.
             let itemComponents = items.atoms(ofElementAt: index)
             guard !itemComponents.isEmpty else { continue }
-            result.append(CommonAtomicComponents.breakLine)
+            let itemCondition = VisibilityLayout.condition(ofItem: itemComponents)
+            result.append(VisibilityLayout.decoration(CommonAtomicComponents.breakLine, visibleUnder: itemCondition))
             if let indentComponent {
-                result.append(indentComponent)
+                result.append(VisibilityLayout.decoration(indentComponent, visibleUnder: itemCondition))
             }
             result.append(contentsOf: itemComponents)
+            earlierItemsCondition = hasContent ? VisibilityLayout.either(earlierItemsCondition, itemCondition) : itemCondition
             hasContent = true
         }
         if hasContent {
-            result.append(CommonAtomicComponents.breakLine)
+            result.append(VisibilityLayout.decoration(CommonAtomicComponents.breakLine, visibleUnder: earlierItemsCondition))
         }
         return result
     }
@@ -487,17 +519,23 @@ public struct Rows: SemanticStringComponent {
         // is opened by the outer container's leading separator.
         result.reserveCapacity(items.totalComponentCount + items.count * 2)
         var hasContent = false
+        // That some sub-row so far is visible (see `VisibilityLayout`);
+        // `nil` is always, which is all it ever is without regions.
+        var earlierItemsCondition: VisibilityCondition?
         for index in items.indices {
             // Zero-copy slice; empty sub-rows are skipped entirely.
             let itemComponents = items.atoms(ofElementAt: index)
             guard !itemComponents.isEmpty else { continue }
+            let itemCondition = VisibilityLayout.condition(ofItem: itemComponents)
             if hasContent {
-                result.append(CommonAtomicComponents.breakLine)
+                let separatorCondition = VisibilityLayout.both(itemCondition, earlierItemsCondition)
+                result.append(VisibilityLayout.decoration(CommonAtomicComponents.breakLine, visibleUnder: separatorCondition))
                 if let indentComponent {
-                    result.append(indentComponent)
+                    result.append(VisibilityLayout.decoration(indentComponent, visibleUnder: separatorCondition))
                 }
             }
             result.append(contentsOf: itemComponents)
+            earlierItemsCondition = hasContent ? VisibilityLayout.either(earlierItemsCondition, itemCondition) : itemCondition
             hasContent = true
         }
         return result

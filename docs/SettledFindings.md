@@ -27,14 +27,14 @@
 - **现象**：`SemanticString { … }` 与容器 `content:` 闭包的装配路径慢于 `main`（第三轮实测 1.4–1.7×，第七轮实测 1.24×）。
 - **裁决**：**有意不修**（第三轮如实记账，第五轮复核维持）。
 - **理由**：急切展平在 builder 收集时拷一次、容器渲染再拷一次，`main` 靠保留装箱元素只拷一次。消除它就是把"保留结构"请回来——正是第二轮重设计拆掉的东西，而那次重设计消灭的是一整类组合面缺陷（10 项同源缺陷）。作为交换，流式 append 快 2.7×、`+=` 快 4×、`[SemanticString]` 条目容器快于 `main`。
-- **仍然成立**：是。第七轮实测倍率（1.24×）**低于**已记账区间，未恶化。
+- **仍然成立**：是，裁决不变（结构仍不保留）。**第九批更新**（[AppendPathPerformance.md](AppendPathPerformance.md)）：不请回结构也能收回一部分——存在量 append 改为一次协议分派、builder 累积改 `consuming`、复合展平在空目标上直接接管数组之后，对改动前 tip 实测 `MemberList { for row in rows { row } }.asSemanticString()` 0.95 → 0.63 ms、`MemberList(level:, rows).asSemanticString()` 0.37 → 0.19 ms（2000 行）。剩余的每层嵌套一次拷贝属于尚未落地的 `buildComponents(into:)` 汇入式展平；对 `main` 的倍率未重测。
 
 ## S4 · `PlainAtomicSemanticComponent` 违约叶子在 release 下的内容分叉
 
 - **现象**：违约实现（conform 了却又 override `buildComponents()`）经 `append` 与经 `@SemanticStringBuilder` 渲染出不同内容，两值 `!=` 且 hash 不同；release 下无任何诊断。
 - **裁决**：**有意不修**（第六轮）。
 - **理由**：该快路径的全部价值就是不调用 `buildComponents()`，无法免费加运行时校验；协议文档整段警告 + debug 断言兜底。
-- **仍然成立**：是，**但第七轮修正了文档表述**——协议文档原称断言会使违约实现"在首个流式测试即失败而不会发布分叉"，与实现相反，已改为实话。**另注**：断言自身的 debug 性能代价（快路径反而最慢）尚未处理，属独立的待修项，不在本条裁决范围内。
+- **仍然成立**：是，**但第七轮修正了文档表述**——协议文档原称断言会使违约实现"在首个流式测试即失败而不会发布分叉"，与实现相反，已改为实话。**另注**：断言自身的 debug 性能代价（快路径反而最慢）尚未处理，属独立的待修项，不在本条裁决范围内。**第九批更新**：分叉的**形态**改变了。存在量 append 改为一次协议分派后，builder 的子项也走快路径，于是 `append` 与 builder 两边内容**一致**（都忽略 override），override 只在复合组件直接调用 `buildComponents()` 的地方被采纳（`MemberList` / `BlockList` / `Rows` 的 `[Component]` 数组初始化器、`Joined` 的 separator / prefix / suffix、`NestedDeclaration(_:)`、`TupleComponent`、`Array` / `Optional` 展平）。release 实测：`append` 与 builder 都渲染 `"x"`，`MemberList(level:, [leaf])` 渲染 `"<x>"`。裁决不变：分叉仍是承诺被违反的后果，协议文档与 `AGENTS.md` 已按新形态改写。
 
 ## S5 · 组件展平时机由读取时提前到 append 时
 

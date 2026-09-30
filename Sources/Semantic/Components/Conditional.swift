@@ -111,13 +111,18 @@ public struct ForEach<C: Collection>: SemanticStringComponent {
         let sepComponents = separator.buildComponents()
         var result: [AtomicComponent] = []
         var needsSeparator = false
+        // A separator is visible when the item after it is and some item
+        // before it is (see `VisibilityLayout`).
+        var earlierItemsCondition: VisibilityCondition?
         for element in collection {
             let item = content(element)
             guard !item.isEmpty else { continue }
+            let itemCondition = VisibilityLayout.condition(ofItem: item.components)
             if needsSeparator {
-                result.append(contentsOf: sepComponents)
+                result.append(contentsOf: VisibilityLayout.decorations(sepComponents, visibleUnder: VisibilityLayout.both(itemCondition, earlierItemsCondition)))
             }
             result.append(contentsOf: item.components)
+            earlierItemsCondition = needsSeparator ? VisibilityLayout.either(earlierItemsCondition, itemCondition) : itemCondition
             needsSeparator = true
         }
         self.content = result

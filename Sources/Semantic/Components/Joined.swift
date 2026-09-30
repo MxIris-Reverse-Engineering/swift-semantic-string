@@ -154,16 +154,26 @@ public struct Joined: SemanticStringComponent {
     @inlinable
     public func buildComponents() -> [AtomicComponent] {
         // An all-empty Joined produces nothing at all — not even prefix/suffix.
+        // The same probe finds when the prefix and suffix are visible: that
+        // some item is (see `VisibilityLayout`). Without regions it stops at
+        // the first non-empty item, as it always did.
         var hasContent = false
-        for index in items.indices where !items.atoms(ofElementAt: index).isEmpty {
+        var containerCondition: VisibilityCondition?
+        for index in items.indices {
+            let itemComponents = items.atoms(ofElementAt: index)
+            guard !itemComponents.isEmpty else { continue }
+            let itemCondition = VisibilityLayout.condition(ofItem: itemComponents)
+            containerCondition = hasContent ? VisibilityLayout.either(containerCondition, itemCondition) : itemCondition
             hasContent = true
-            break
+            if containerCondition == nil {
+                break
+            }
         }
         guard hasContent else { return [] }
 
         let sepComponents = separator.buildComponents()
-        let prefixComponents = prefix?.buildComponents() ?? []
-        let suffixComponents = suffix?.buildComponents() ?? []
+        let prefixComponents = VisibilityLayout.decorations(prefix?.buildComponents() ?? [], visibleUnder: containerCondition)
+        let suffixComponents = VisibilityLayout.decorations(suffix?.buildComponents() ?? [], visibleUnder: containerCondition)
 
         // Assembly is one pass over zero-copy element slices into one
         // reserved allocation. (The `hasContent` probe above is a second
@@ -180,13 +190,16 @@ public struct Joined: SemanticStringComponent {
         )
         result.append(contentsOf: prefixComponents)
         var needsSeparator = false
+        var earlierItemsCondition: VisibilityCondition?
         for index in items.indices {
             let itemComponents = items.atoms(ofElementAt: index)
             guard !itemComponents.isEmpty else { continue }
+            let itemCondition = VisibilityLayout.condition(ofItem: itemComponents)
             if needsSeparator {
-                result.append(contentsOf: sepComponents)
+                result.append(contentsOf: VisibilityLayout.decorations(sepComponents, visibleUnder: VisibilityLayout.both(itemCondition, earlierItemsCondition)))
             }
             result.append(contentsOf: itemComponents)
+            earlierItemsCondition = needsSeparator ? VisibilityLayout.either(earlierItemsCondition, itemCondition) : itemCondition
             needsSeparator = true
         }
         result.append(contentsOf: suffixComponents)
