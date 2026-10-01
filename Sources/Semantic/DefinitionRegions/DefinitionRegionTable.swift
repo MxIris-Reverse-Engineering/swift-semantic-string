@@ -112,7 +112,9 @@ extension FrozenSemanticString {
         for span in spans {
             // An index past the table reads as no identifier, and must keep
             // doing so against the separated table, which is a different size.
-            let originalIndex = Int(span.identifierIndex) < separatedIdentifierIndexByOriginalIndex.count ? Int(span.identifierIndex) : 0
+            // `Int(exactly:)` because a 32-bit `Int` cannot hold every `UInt32`,
+            // and a decoded payload keeps an out-of-range index verbatim.
+            let originalIndex = Int(exactly: span.identifierIndex).flatMap { $0 < separatedIdentifierIndexByOriginalIndex.count ? $0 : nil } ?? 0
             separatedSpans.append(Span(
                 length: span.length,
                 typeCode: span.typeCode,
