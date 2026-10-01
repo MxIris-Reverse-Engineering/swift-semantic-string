@@ -405,6 +405,42 @@ print(regions.projection(of: text) { _ in false }.text.string)          // "var 
 
 The design and its validation are in [docs/VisibilityRegions.md](docs/VisibilityRegions.md).
 
+## Definition Regions: Take a Nested Definition Out of Its Parent's Print
+
+A printer that prints a definition together with the definitions nested in it — a type and its nested types — can wrap each nested one in a `DefinitionRegion`. A caller that also needs each nested definition on its own then takes it out of the parent's print instead of printing it a second time.
+
+```swift
+func printStruct(_ name: String, level: Int, nested: [String] = []) -> SemanticString {
+    SemanticString {
+        DeclarationBlock(level: level) {
+            Keyword("struct")
+            Space()
+            TypeDeclaration(kind: .struct, name)
+        } body: {
+            for nestedName in nested {
+                NestedDeclaration {
+                    DefinitionRegion(nestedName, content: printStruct(nestedName, level: level + 1))
+                }
+            }
+        }
+    }
+}
+
+let printed = printStruct("Outer", level: 1, nested: ["Inner"]).frozen()
+let (text, definitions) = printed.separatingDefinitionRegions()
+let inner = definitions.regions(withIdentity: "Inner")[0]
+let innerOnItsOwn = printed.content(ofDefinitionRegion: inner).removingIndentation(levels: inner.depth + 1)
+// innerOnItsOwn == printStruct("Inner", level: 1).frozen()
+```
+
+- The identity travels in each atom's `identifier`, so the marked string renders byte for byte like the unmarked one. `separatingDefinitionRegions()` restores the identifiers and returns each region's identity, UTF-8 range, depth and enclosing region. An identity must be non-empty and free of control characters.
+- A region covers its content and nothing else: what a container prints around it, such as the line break in front of a `NestedDeclaration`, belongs to the enclosing text.
+- `content(ofDefinitionRegion:)` slices the marked string to one region, removes the identities of that region and of the regions around it — regions nested inside keep theirs, visibility conditions stay — and rebuilds the identifier table the way freezing does, so the result's separations match those of the definition's own print. Call it on the marked string, or on it after `separatingVisibilityRegions()`, not on the text `separatingDefinitionRegions()` returns.
+- `removingIndentation(levels:)` removes four spaces per level from the start of every line, inside multi-line atoms too; lines holding only a line break stay as they are, and it returns `nil` when another line lacks the indentation.
+- Definition and visibility regions combine in either nesting order with identical atoms, and the two separations run in either order.
+
+The design and its validation are in [docs/DefinitionRegions.md](docs/DefinitionRegions.md).
+
 ## License
 
 MIT
