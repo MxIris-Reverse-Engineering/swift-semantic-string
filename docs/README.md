@@ -22,6 +22,7 @@
 - [AppendPathPerformance.md](AppendPathPerformance.md) —— 第九批：append 路径与字符串拼接的四项性能优化，无行为变更。`string` 拼接改为把每个 token 的 UTF-8 拷进一个精确预留的字节缓冲再一次性解码（100 万原子 28.2 → 10.0 ms，`frozen()` 冷路径 36.2 → 18.6 ms）；`append(some SemanticStringComponent)` 改为经协议要求 `_appendAsElement(into:)` 一次分派，取代两次 `as?` 探测加每个叶子一个单元素数组（存在量 append 121.9 → 69.8 ms，静态下界 44 ms）；result builder 的累积参数改 `consuming`（8 语句块 199 → 92 ms）；复合展平在空目标上直接接管数组（`SemanticString(Group(rows))` 0.31 → 0.18 ms）。已裁决清单 S3 的差距收回约三分之一，S4 的分叉形态随之改变（builder 与 `append` 两边一致，override 只在复合组件直接调用 `buildComponents()` 处被采纳）。
 - [AppendPathPerformanceExplained.md](AppendPathPerformanceExplained.md) —— 上一篇的讲解版，面向任何 Swift 开发者：每项优化改了什么、为什么成立（`String` 的 UTF-8 表示、存在量与协议见证表、result builder 的展开与参数所有权、数组的写时复制）、被放弃的更快方案及理由、怎么证明行为没变。
 - [VisibilityRegions.md](VisibilityRegions.md) —— 可见性区域：`VisibilityRegion` 组件把「这段内容在什么选项下可见」记在原子的 `identifier` 上（文本逐字节不变），容器把成员的条件带到它们打的换行、缩进、分隔符和前后缀上，冻结后分离成区域表，再按任意选项投影出打印器会输出的文本。供 MachOSwiftSection / MachOObjCSection 的标记模式与 RuntimeViewer 的 Find 语料使用：打印一次全量，切换显示选项不必重新打印。新增 API；没打标记时输出不变。
+- [DefinitionRegions.md](DefinitionRegions.md) —— 定义区域：`DefinitionRegion` 组件把「这段内容是哪个嵌套定义的打印结果」记在原子的 `identifier` 上（编码放在可见性标记里面一层，容器和可见性分离都不受影响，两种分离可按任意顺序做），冻结后分离成区域表；`content(ofDefinitionRegion:)` 从父定义的打印结果里取出一个嵌套定义，`removingIndentation(levels:)` 按行去掉嵌套带来的缩进，结果与该定义单独打印逐项相同。供 MachOSwiftSection 的 `marksNestedDefinitions` 与 RuntimeViewer 的 Find 语料使用：嵌套定义不必再单独打印一遍。新增 API；没打标记时输出不变。
 
 ## 已裁决清单
 
