@@ -33,7 +33,7 @@ importing several of them still writes `Transformer.CType` unqualified:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string.git", from: "0.4.0")
+    .package(url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string.git", from: "0.5.0")
 ]
 ```
 
