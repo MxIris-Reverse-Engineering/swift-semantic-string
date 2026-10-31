@@ -1,6 +1,6 @@
 # 注释结构区域：标出一段文字是什么、它的每一段是什么
 
-- **状态**：已实现，合入 `next`（分支 `feature/annotation-regions`，尚未发版）
+- **状态**：已实现，随 0.6.0 发版（分支 `feature/annotation-regions`）
 - **日期**：2026-10-31
 - **使用方**：MachOSwiftSection、MachOObjCSection 的 `marksCommentStructure`；RuntimeViewer 的 SourceEditor 注释标签（它的提案 `draft-source-editor-comment-annotations`）
 
