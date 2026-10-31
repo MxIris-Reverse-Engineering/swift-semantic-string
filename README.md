@@ -441,6 +441,41 @@ let innerOnItsOwn = printed.content(ofDefinitionRegion: inner).removingIndentati
 
 The design and its validation are in [docs/DefinitionRegions.md](docs/DefinitionRegions.md).
 
+## Annotation Regions: Say What Each Comment Is
+
+A printer knows the structure of what it prints: that a comment gives a member's address, which part of it is the label and which the value, how the nodes of a field-offset tree nest. It can mark that structure as it prints, so that a reader presents it — draws a comment as a tag, folds a tree to its root — without parsing text that a user may have reworded through a template.
+
+```swift
+extension AnnotationRegion.Kind {
+    static let memberAddress = Self("memberAddress")
+}
+
+let printed = SemanticString {
+    AnnotationRegion(.memberAddress) {
+        AnnotatedAtom(type: .comment) {
+            AnnotationSegment(.marker) { "// " }
+            AnnotationSegment(.label) { "Address" }
+            AnnotationSegment(.separator) { ": " }
+            AnnotationSegment(.value) { "0x135DC" }
+        }
+    }
+}.frozen()
+
+let (text, annotations) = printed.separatingAnnotationRegions()
+// text == Comment("Address: 0x135DC").asSemanticString().frozen()
+// annotations.regions:  memberAddress at UTF-8 0 ..< 19
+// annotations.segments: marker 0 ..< 3, label 3 ..< 10, separator 10 ..< 12, value 12 ..< 19
+```
+
+- `AnnotationRegion` marks content with a kind; `AnnotationSegment` marks part of a region with a role. Both keep their content's text and element structure. Regions nest — a region inside one of its own kind makes a tree — and two regions or segments of one kind directly next to each other read back as two.
+- `AnnotatedAtom` prints what would be one atom as pieces, so that its parts can sit in segments and regions. The separation merges the pieces back into the spans the atom freezes to, so the separated string equals the one printed with the atom whole, span for span. The pieces take the atom's type and identifier and may not carry their own; marks added around the atom afterwards go on every piece.
+- Kinds and roles are strings wrapped in `AnnotationRegion.Kind` and `AnnotationSegment.Role`. This library defines the roles comment printers share — `marker`, `label`, `qualifier`, `separator`, `key`, `value`, `name`, `type`, `treePrefix`, `text` — and the kind `note`; a printer adds its own kinds in an extension. Neither may be empty or contain control characters.
+- A region's range runs from its first atom to its last, including what a container prints between its items, less leading and trailing atoms that hold only whitespace and lie in no segment; a region of nothing else is left out of the table. Segments are never trimmed.
+- The marks travel in each atom's `identifier`, inside a visibility tag and definition identities, so the three kinds of region nest in any order and the three separations run in any order. Separating a projection gives the regions as that projection shows them — the same as printing with those options — and a nested definition taken out with `content(ofDefinitionRegion:)` and `removingIndentation(levels:)` separates like its own print.
+- One case still reads two neighbours of one kind as one: when neither has an atom that is more than spaces and is visible whenever the rest of the region is — a segment of nothing but spaces, say.
+
+The design and its validation are in [docs/AnnotationRegions.md](docs/AnnotationRegions.md).
+
 ## License
 
 MIT
