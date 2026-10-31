@@ -23,6 +23,7 @@
 - [AppendPathPerformanceExplained.md](AppendPathPerformanceExplained.md) —— 上一篇的讲解版，面向任何 Swift 开发者：每项优化改了什么、为什么成立（`String` 的 UTF-8 表示、存在量与协议见证表、result builder 的展开与参数所有权、数组的写时复制）、被放弃的更快方案及理由、怎么证明行为没变。
 - [VisibilityRegions.md](VisibilityRegions.md) —— 可见性区域：`VisibilityRegion` 组件把「这段内容在什么选项下可见」记在原子的 `identifier` 上（文本逐字节不变），容器把成员的条件带到它们打的换行、缩进、分隔符和前后缀上，冻结后分离成区域表，再按任意选项投影出打印器会输出的文本。供 MachOSwiftSection / MachOObjCSection 的标记模式与 RuntimeViewer 的 Find 语料使用：打印一次全量，切换显示选项不必重新打印。新增 API；没打标记时输出不变。
 - [DefinitionRegions.md](DefinitionRegions.md) —— 定义区域：`DefinitionRegion` 组件把「这段内容是哪个嵌套定义的打印结果」记在原子的 `identifier` 上（编码放在可见性标记里面一层，容器和可见性分离都不受影响，两种分离可按任意顺序做），冻结后分离成区域表；`content(ofDefinitionRegion:)` 从父定义的打印结果里取出一个嵌套定义，`removingIndentation(levels:)` 按行去掉嵌套带来的缩进，结果与该定义单独打印逐项相同。供 MachOSwiftSection 的 `marksNestedDefinitions` 与 RuntimeViewer 的 Find 语料使用：嵌套定义不必再单独打印一遍。新增 API；没打标记时输出不变。
+- [AnnotationRegions.md](AnnotationRegions.md) —— 注释结构区域（已批准，实现中）：`AnnotationRegion` 标出一段文字是哪种注释（kind），`AnnotationSegment` 标出它每一段的角色（marker、label、value……），`AnnotatedAtom` 把不打标记时的一个原子拆成几片来标、分离时并回；标记放在可见性与定义编码里面一层，冻结后分离成区域与段的表。相邻的同 kind 区域靠只看区域自身内容的「锚点」分开，经得起去缩进、投影与切出。供 MachOSwiftSection / MachOObjCSection 的 `marksCommentStructure` 与 RuntimeViewer 的 SourceEditor 注释标签使用。新增 API；没打标记时输出不变。
 
 ## 已裁决清单
 
