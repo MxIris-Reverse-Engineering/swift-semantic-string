@@ -633,6 +633,27 @@ struct AnnotationRegionTests {
         #expect(separation.annotations.segments(inRegionAt: nil).isEmpty)
     }
 
+    @Test("the README example holds")
+    func readmeExample() {
+        let printed = SemanticString {
+            AnnotationRegion(.memberAddress) {
+                AnnotatedAtom(type: .comment) {
+                    AnnotationSegment(.marker) { "// " }
+                    AnnotationSegment(.label) { "Address" }
+                    AnnotationSegment(.separator) { ": " }
+                    AnnotationSegment(.value) { "0x135DC" }
+                }
+            }
+        }.frozen()
+
+        let (text, annotations) = printed.separatingAnnotationRegions()
+        #expect(text == Comment("Address: 0x135DC").asSemanticString().frozen())
+        #expect(annotations.regions.map(\.kind) == [.memberAddress])
+        #expect(annotations.regions.map { $0.utf8Offset ..< $0.utf8Offset + $0.utf8Length } == [0 ..< 19])
+        #expect(annotations.segments.map(\.role) == [.marker, .label, .separator, .value])
+        #expect(annotations.segments.map { $0.utf8Offset ..< $0.utf8Offset + $0.utf8Length } == [0 ..< 3, 3 ..< 10, 10 ..< 12, 12 ..< 19])
+    }
+
     @Test("regions of one kind nest into a tree, each with its depth and the region enclosing it")
     func nestedRegionsOfOneKind() {
         let marked = SemanticString {
