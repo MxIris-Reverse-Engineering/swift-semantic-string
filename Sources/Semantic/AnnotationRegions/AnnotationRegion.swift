@@ -53,12 +53,20 @@ public struct AnnotationRegion: SemanticStringComponent {
         @inlinable
         public init(rawValue: String) {
             AnnotationTag.validate(rawValue, describedAs: "kind")
-            self.rawValue = rawValue
+            self.init(uncheckedRawValue: rawValue)
         }
 
         @inlinable
         public init(_ rawValue: String) {
             self.init(rawValue: rawValue)
+        }
+
+        /// A kind read back from an identifier, which a hand-built string
+        /// may have filled with anything but the encoding's own markers; a
+        /// reader does not trap on it.
+        @inlinable
+        init(uncheckedRawValue rawValue: String) {
+            self.rawValue = rawValue
         }
 
         /// An explanatory comment that belongs to no more specific kind.

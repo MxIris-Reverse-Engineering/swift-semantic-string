@@ -34,12 +34,18 @@ public struct AnnotationSegment: SemanticStringComponent {
         @inlinable
         public init(rawValue: String) {
             AnnotationTag.validate(rawValue, describedAs: "role")
-            self.rawValue = rawValue
+            self.init(uncheckedRawValue: rawValue)
         }
 
         @inlinable
         public init(_ rawValue: String) {
             self.init(rawValue: rawValue)
+        }
+
+        /// See `AnnotationRegion.Kind.init(uncheckedRawValue:)`.
+        @inlinable
+        init(uncheckedRawValue rawValue: String) {
+            self.rawValue = rawValue
         }
 
         /// The comment's delimiters: `// `, `/* `, ` */`.

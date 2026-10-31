@@ -126,7 +126,7 @@ RuntimeViewer 已把契约放宽为「分离后每个字节的文本、语义类
 每一步单独构建通过、测试通过后提交。
 
 1. **编码与三个组件**：`AnnotationRegion`（含 `Kind`）、`AnnotationSegment`（含 `Role`）、`AnnotatedAtom`，以及阶段的计算与编码。测试覆盖编码、三种区域的嵌套顺序、元素结构、各前提条件的 trap。（已完成）
-2. **分离与表**：`AnnotationRegionTable` 与 `separatingAnnotationRegions()`——边界判定、片组并回与重切、首尾空白裁剪。测试覆盖相邻实例、嵌套、容器装饰、裁剪、三种分离的顺序、切出与去缩进、投影、超长原子、已知限制。
+2. **分离与表**：`AnnotationRegionTable` 与 `separatingAnnotationRegions()`——边界判定、片组并回与重切、首尾空白裁剪。测试覆盖相邻实例、嵌套、容器装饰、裁剪、三种分离的顺序、切出与去缩进、投影、超长原子、已知限制。（已完成）
 3. **文档与收尾**：README 新增一节；AGENTS.md 的架构说明、identifier 编码规则与测试文件清单；本文的状态与验证结果；watchOS `arm64_32` 编译检查。
 
 ## 决策日志
