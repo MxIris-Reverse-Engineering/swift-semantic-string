@@ -36,7 +36,7 @@ extension FrozenSemanticString: Codable {
     /// `text`). Callers feeding this type untrusted bytes must cap the
     /// payload size *before* handing it to a decoder; no validation order
     /// inside this initializer can do it for them.
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let text = try container.decode(String.self, forKey: .text)
         let spanLengths = try container.decode([UInt16].self, forKey: .spanLengths)
@@ -132,7 +132,7 @@ extension FrozenSemanticString: Codable {
         self.init(text: text, spans: spans, identifierTable: identifierTable)
     }
 
-    public func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(text, forKey: .text)
         try container.encode(spans.map(\.length), forKey: .spanLengths)
