@@ -1,13 +1,13 @@
 // MARK: - Codable Conformance
 
 extension SemanticString: Codable {
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         let atomicComponents = try container.decode([AtomicComponent].self)
         self.init(components: atomicComponents)
     }
 
-    public func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: any Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(components)
     }
