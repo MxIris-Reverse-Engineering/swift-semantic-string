@@ -54,12 +54,13 @@ extension SemanticType {
             return 18 + (context == .declaration ? 0 : 1)
         case .function(let context):
             return 20 + (context == .declaration ? 0 : 1)
+        case .macro: return 22
         }
     }
 
     /// The lowest code no case has claimed. New cases start here.
     @inlinable
-    public static var nextFreeFrozenTypeCode: UInt8 { 22 }
+    public static var nextFreeFrozenTypeCode: UInt8 { 23 }
 
     /// Inverse of `frozenTypeCode`. Returns `nil` for codes this version
     /// does not know (encoded by a future version).
@@ -81,6 +82,7 @@ extension SemanticType {
         case 16, 17: self = .type(.other, frozenTypeCode == 16 ? .declaration : .name)
         case 18, 19: self = .member(frozenTypeCode == 18 ? .declaration : .name)
         case 20, 21: self = .function(frozenTypeCode == 20 ? .declaration : .name)
+        case 22: self = .macro
         default:
             return nil
         }

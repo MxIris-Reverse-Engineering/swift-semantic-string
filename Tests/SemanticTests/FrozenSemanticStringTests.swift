@@ -34,7 +34,7 @@ struct FrozenSemanticStringTests {
     /// `SemanticType` has associated values and cannot be `CaseIterable`.
     /// `assertCaseListIsExhaustive(_:)` below keeps the hand list honest.
     private var allSemanticTypes: [SemanticType] {
-        var types: [SemanticType] = [.standard, .comment, .keyword, .variable, .numeric, .argument, .error, .other]
+        var types: [SemanticType] = [.standard, .comment, .keyword, .variable, .numeric, .argument, .error, .macro, .other]
         for typeKind in SemanticType.TypeKind.allCases {
             for context in SemanticType.Context.allCases {
                 types.append(.type(typeKind, context))
@@ -55,7 +55,7 @@ struct FrozenSemanticStringTests {
     /// code for a future case.
     private func assertCaseListIsExhaustive(_ semanticType: SemanticType) {
         switch semanticType {
-        case .standard, .comment, .keyword, .variable, .numeric, .argument, .error, .other,
+        case .standard, .comment, .keyword, .variable, .numeric, .argument, .error, .macro, .other,
              .type, .member, .function:
             break
         }
@@ -184,12 +184,12 @@ struct FrozenSemanticStringTests {
             #expect(code < SemanticType.nextFreeFrozenTypeCode, "assigned code \(code) must stay below the next-free marker")
         }
         #expect(seenCodes.count == allSemanticTypes.count, "every SemanticType value owns exactly one code")
-        #expect(seenCodes.count == 22, "update alongside allSemanticTypes when adding a case")
+        #expect(seenCodes.count == 23, "update alongside allSemanticTypes when adding a case")
     }
 
     @Test("Unknown type codes decode to nil and render as .other")
     func unknownTypeCode() {
-        #expect(SemanticType(frozenTypeCode: 22) == nil)
+        #expect(SemanticType(frozenTypeCode: SemanticType.nextFreeFrozenTypeCode) == nil)
         #expect(SemanticType(frozenTypeCode: .max) == nil)
 
         let frozen = FrozenSemanticString(
@@ -202,6 +202,34 @@ struct FrozenSemanticStringTests {
             walkedTypes.append(type)
         }
         #expect(walkedTypes == [.other])
+    }
+
+    /// `.macro` was the first case added after the original twenty-two codes.
+    /// A reader built before it meets code 22 as an unknown code and shows the
+    /// run as `.other` (plain text) instead of failing — which is what lets an
+    /// engine that marks macros talk to an older app.
+    @Test("A macro keeps its type through freezing and both Codable forms")
+    func macroRoundTrips() throws {
+        let semanticString = SemanticString {
+            Macro("NS_REFINED_FOR_SWIFT")
+            BreakLine()
+            Keyword("@interface")
+        }
+        #expect(semanticString.components.first?.type == .macro)
+        #expect(SemanticType.macro.frozenTypeCode == 22)
+
+        let frozen = semanticString.frozen()
+        var walkedTypes: [SemanticType] = []
+        frozen.enumerateSpans { _, type, _ in
+            walkedTypes.append(type)
+        }
+        #expect(walkedTypes == [.macro, .standard, .keyword])
+
+        let decodedFrozen = try JSONDecoder().decode(FrozenSemanticString.self, from: JSONEncoder().encode(frozen))
+        #expect(decodedFrozen == frozen)
+
+        let decodedSemanticString = try JSONDecoder().decode(SemanticString.self, from: JSONEncoder().encode(semanticString))
+        #expect(decodedSemanticString == semanticString)
     }
 
     // MARK: - Codable
