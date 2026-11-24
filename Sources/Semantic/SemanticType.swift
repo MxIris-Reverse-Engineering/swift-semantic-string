@@ -19,6 +19,10 @@ public enum SemanticType: Hashable, Codable, Sendable {
     case numeric
     case argument
     case error
+    /// A preprocessor macro — `NS_SWIFT_NAME`, `NS_REFINED_FOR_SWIFT`,
+    /// `API_AVAILABLE` — named in a C-family declaration. Xcode colours these
+    /// apart from keywords, with its preprocessor-macro colour.
+    case macro
     case type(TypeKind, Context)
     case member(Context)
     case function(Context)

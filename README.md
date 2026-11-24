@@ -33,7 +33,7 @@ importing several of them still writes `Transformer.CType` unqualified:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string.git", from: "0.6.0")
+    .package(url: "https://github.com/MxIris-Reverse-Engineering/swift-semantic-string.git", from: "0.7.0")
 ]
 ```
 
@@ -83,6 +83,7 @@ declaration.enumerate { text, type in
 | `.argument` | Function argument labels |
 | `.comment` | Comments and annotations |
 | `.error` | Error indicators |
+| `.macro` | Preprocessor macros in C-family declarations (`NS_SWIFT_NAME`, `NS_REFINED_FOR_SWIFT`, ...) |
 | `.type(TypeKind, Context)` | Type references — `TypeKind`: `.enum`, `.struct`, `.class`, `.protocol`, `.other`; `Context`: `.declaration` or `.name` |
 | `.member(Context)` | Member references (property/method) |
 | `.function(Context)` | Function references |
@@ -97,6 +98,7 @@ Atomic components are leaf nodes — each holds a single string and its semantic
 
 ```swift
 Keyword("func")                        // .keyword
+Macro("NS_REFINED_FOR_SWIFT")          // .macro
 Variable("count")                      // .variable
 Numeric("42")                          // .numeric
 Argument("name")                       // .argument

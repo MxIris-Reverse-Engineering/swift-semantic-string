@@ -302,7 +302,7 @@ struct ReviewFindingsRegressionTests {
         // while the new case collides with `.member`'s fixed codes. The
         // uniqueness guard itself is
         // `FrozenSemanticStringTests.typeCodeBijection`.
-        var types: [SemanticType] = [.standard, .comment, .keyword, .variable, .numeric, .argument, .error, .other]
+        var types: [SemanticType] = [.standard, .comment, .keyword, .variable, .numeric, .argument, .error, .macro, .other]
         for typeKind in SemanticType.TypeKind.allCases {
             for context in SemanticType.Context.allCases {
                 types.append(.type(typeKind, context))
